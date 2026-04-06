@@ -1,18 +1,21 @@
-import sqlite3
-from langgraph.checkpoint.sqlite import SqliteSaver
+import operator
 import os
+import sqlite3
+from typing import Annotated, Type, TypedDict
+
+import requests
+from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.tools import BaseTool
+from langchain_openai import ChatOpenAI
+from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.graph import END, StateGraph
+from pydantic import BaseModel, Field, PrivateAttr
+
 
 db_path = os.path.abspath("checkpoints.db")
 conn = sqlite3.connect(db_path, check_same_thread=False)
-memory = SqliteSaver(conn) 
-from langgraph.graph import StateGraph, END
-from typing import TypedDict, Annotated, Type
-import operator
-from langchain_core.messages import AnyMessage, SystemMessage, HumanMessage, ToolMessage
-from langchain_openai import ChatOpenAI
-from pydantic import BaseModel, Field, PrivateAttr
-from langchain_core.tools import BaseTool
-import requests
+memory = SqliteSaver(conn)
+
 
 class BoChaSearchInput(BaseModel):
     query: str = Field(..., description="搜索查询内容")
@@ -92,26 +95,32 @@ class Agent:
         return {"messages": results}
 
 
-prompt = """你是一个科研助理。你可以使用搜索工具查找信息。
-可以多次调用搜索，但如果搜索结果不可靠，不要编造答案，应明确说明无法确认。"""
+prompt = """你是一个科研助理。你可以使用搜索工具查找信息。可以多次调用搜索，但如果搜索结果不可靠，不要编造答案，应明确说明无法确认。"""
 
-aliyun_api_key = "sk-d18ec22172af4ad2aa8fa11e82e480c0"
+dashscope_api_key = os.getenv("DASHSCOPE_API_KEY")
+bocha_api_key = os.getenv("BOCHA_API_KEY")
+
+if not dashscope_api_key:
+    raise EnvironmentError("Missing DASHSCOPE_API_KEY environment variable.")
+
+if not bocha_api_key:
+    raise EnvironmentError("Missing BOCHA_API_KEY environment variable.")
+
 model = ChatOpenAI(
     model="qwen-plus",
-    openai_api_key=aliyun_api_key,
+    openai_api_key=dashscope_api_key,
     openai_api_base="https://dashscope.aliyuncs.com/compatible-mode/v1",
 )
-tool = BoChaSearchResults(api_key="sk-ec235200d7a2406db3d25841a6dd8958", count=4)
-
+tool = BoChaSearchResults(api_key=bocha_api_key, count=4)
 
 abot = Agent(model, [tool], system=prompt, checkpointer=memory)
-messages=[HumanMessage(content="第7任是谁?")]
+messages = [HumanMessage(content="第一任是谁?")]
 thread = {"configurable": {"thread_id": "1"}}
 for event in abot.graph.stream({"messages": messages}, thread):
     for v in event.values():
         print(v)
 while abot.graph.get_state(thread).next:
-    print("\n", abot.graph.get_state(thread),"\n")
+    print("\n", abot.graph.get_state(thread), "\n")
     _input = input("proceed?")
     if _input != "y":
         print("aborting")

@@ -50,20 +50,37 @@ python graph_mem.py
 
 ## 配置说明
 
-当前示例代码中包含模型与搜索服务相关配置。更合理的做法是：
+当前代码通过环境变量读取 API Key，不再在代码中硬编码密钥。
 
-- 不要在代码中硬编码 API Key
-- 改为使用环境变量读取密钥
-- 提交前检查是否包含敏感信息
+需要的环境变量：
 
-例如可以改成：
+- `DASHSCOPE_API_KEY`
+- `BOCHA_API_KEY`
 
-```bash
-set OPENAI_API_KEY=your_key
-set BOCHA_API_KEY=your_key
+### PowerShell 临时导入
+
+```powershell
+$env:DASHSCOPE_API_KEY="your_dashscope_key"
+$env:BOCHA_API_KEY="your_bocha_key"
+python graph_begin.py
 ```
 
-然后在 Python 中通过环境变量读取。
+### CMD 临时导入
+
+```cmd
+set DASHSCOPE_API_KEY=your_dashscope_key
+set BOCHA_API_KEY=your_bocha_key
+python graph_begin.py
+```
+
+### PowerShell 持久化到当前用户
+
+```powershell
+[System.Environment]::SetEnvironmentVariable("DASHSCOPE_API_KEY", "your_dashscope_key", "User")
+[System.Environment]::SetEnvironmentVariable("BOCHA_API_KEY", "your_bocha_key", "User")
+```
+
+设置完成后，重新打开终端再运行脚本。
 
 ## 当前状态
 
