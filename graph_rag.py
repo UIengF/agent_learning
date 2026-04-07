@@ -4,9 +4,13 @@ import math
 import os
 import re
 import zipfile
+import hashlib
+import json
 from collections import Counter
 from pathlib import Path
 from typing import Any, Type
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 from xml.etree import ElementTree as ET
 
 from pydantic import BaseModel, Field, PrivateAttr
@@ -44,6 +48,7 @@ else:
 
 
 DEFAULT_TOP_K = 3
+DEFAULT_KEYWORD_WEIGHT = 0.5
 
 
 def ensure_log_file(log_path: Path) -> None:
@@ -131,17 +136,107 @@ def chunk_text(text: str, chunk_size: int = 60, chunk_overlap: int = 40) -> list
     return chunks
 
 
+class DashScopeEmbeddingClient:
+    def __init__(
+        self,
+        api_key: str,
+        api_base: str,
+        model: str = "text-embedding-v3",
+        timeout_seconds: int = 30,
+        max_batch_size: int = 10,
+    ):
+        if not api_key:
+            raise ValueError("api_key is required for embedding client.")
+        self.api_key = api_key
+        self.api_base = api_base.rstrip("/")
+        self.model = model
+        self.timeout_seconds = timeout_seconds
+        self.max_batch_size = max(1, max_batch_size)
+
+    def _embed_batch(self, texts: list[str]) -> list[list[float]]:
+        payload = json.dumps({"model": self.model, "input": texts}).encode("utf-8")
+        request = urllib_request.Request(
+            url=f"{self.api_base}/embeddings",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+            },
+            method="POST",
+        )
+
+        try:
+            with urllib_request.urlopen(request, timeout=self.timeout_seconds) as response:
+                raw = response.read().decode("utf-8")
+        except urllib_error.HTTPError as exc:  # pragma: no cover - network call
+            detail = exc.read().decode("utf-8", errors="ignore")
+            raise RuntimeError(f"Embedding request failed: {exc.code} {detail}") from exc
+        except urllib_error.URLError as exc:  # pragma: no cover - network call
+            raise RuntimeError(f"Embedding request failed: {exc.reason}") from exc
+
+        body = json.loads(raw)
+        data = body.get("data")
+        if not isinstance(data, list):
+            raise RuntimeError(f"Unexpected embedding response body: {raw}")
+        data.sort(key=lambda item: item.get("index", 0))
+
+        vectors: list[list[float]] = []
+        for item in data:
+            embedding = item.get("embedding")
+            if not isinstance(embedding, list):
+                raise RuntimeError(f"Unexpected embedding item: {item}")
+            vectors.append([float(value) for value in embedding])
+
+        if len(vectors) != len(texts):
+            raise RuntimeError("Embedding response length does not match input length.")
+        return vectors
+
+    def _embed(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+
+        vectors: list[list[float]] = []
+        for start in range(0, len(texts), self.max_batch_size):
+            batch = texts[start:start + self.max_batch_size]
+            vectors.extend(self._embed_batch(batch))
+        return vectors
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return self._embed(texts)
+
+    def embed_query(self, text: str) -> list[float]:
+        vectors = self._embed([text])
+        return vectors[0] if vectors else []
+
+
 class LocalRAGStore:
-    def __init__(self, docx_path: str | Path, chunk_size: int = 60, chunk_overlap: int = 40):
+    def __init__(
+        self,
+        docx_path: str | Path,
+        chunk_size: int = 60,
+        chunk_overlap: int = 40,
+        embedding_client: Any | None = None,
+        keyword_weight: float = DEFAULT_KEYWORD_WEIGHT,
+    ):
         self.docx_path = Path(docx_path)
+        self.embedding_client = embedding_client
+        self.keyword_weight = max(0.0, min(1.0, keyword_weight))
         self.text = load_docx_text(self.docx_path)
         self.chunks = chunk_text(self.text, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
         if not self.chunks:
             raise ValueError("文档中未提取到可检索内容。")
 
         self.chunk_token_counts = [Counter(tokenize(chunk)) for chunk in self.chunks]
+        self.chunk_lengths = [sum(counter.values()) for counter in self.chunk_token_counts]
+        self.avg_chunk_length = (
+            sum(self.chunk_lengths) / len(self.chunk_lengths) if self.chunk_lengths else 1.0
+        )
+        self.bm25_idf = self._build_bm25_idf(self.chunk_token_counts)
         self.idf = self._build_idf(self.chunk_token_counts)
-        self.chunk_vectors = [self._vectorize(counter) for counter in self.chunk_token_counts]
+        self.chunk_keyword_vectors = [self._vectorize(counter) for counter in self.chunk_token_counts]
+        # Keep legacy attribute name for compatibility with existing callers/tests.
+        self.chunk_vectors = self.chunk_keyword_vectors
+        self.chunk_dense_vectors = self._build_dense_vectors()
 
     @staticmethod
     def _build_idf(counters: list[Counter[str]]) -> dict[str, float]:
@@ -152,6 +247,18 @@ class LocalRAGStore:
 
         return {
             token: math.log((1 + doc_count) / (1 + freq)) + 1.0
+            for token, freq in document_frequency.items()
+        }
+
+    @staticmethod
+    def _build_bm25_idf(counters: list[Counter[str]]) -> dict[str, float]:
+        doc_count = len(counters)
+        document_frequency: Counter[str] = Counter()
+        for counter in counters:
+            document_frequency.update(counter.keys())
+
+        return {
+            token: math.log(1 + ((doc_count - freq + 0.5) / (freq + 0.5)))
             for token, freq in document_frequency.items()
         }
 
@@ -171,33 +278,143 @@ class LocalRAGStore:
         return {token: value / norm for token, value in vector.items()}
 
     @staticmethod
-    def _cosine_similarity(left: dict[str, float], right: dict[str, float]) -> float:
+    def _sparse_cosine_similarity(left: dict[str, float], right: dict[str, float]) -> float:
         if not left or not right:
             return 0.0
         if len(left) > len(right):
             left, right = right, left
         return sum(value * right.get(token, 0.0) for token, value in left.items())
 
+    @staticmethod
+    def _normalize_dense_vector(vector: list[float]) -> list[float]:
+        if not vector:
+            return []
+        norm = math.sqrt(sum(value * value for value in vector))
+        if norm == 0:
+            return []
+        return [value / norm for value in vector]
+
+    def _bm25_score(
+        self,
+        doc_token_counts: Counter[str],
+        query_token_counts: Counter[str],
+        doc_length: int,
+        k1: float = 1.5,
+        b: float = 0.75,
+    ) -> float:
+        if not doc_token_counts or not query_token_counts:
+            return 0.0
+
+        norm = k1 * (1.0 - b + b * (doc_length / max(self.avg_chunk_length, 1e-9)))
+        score = 0.0
+        for token in query_token_counts:
+            term_freq = doc_token_counts.get(token, 0)
+            if term_freq <= 0:
+                continue
+            idf = self.bm25_idf.get(token, 0.0)
+            score += idf * ((term_freq * (k1 + 1.0)) / (term_freq + norm))
+        return score
+
+    @staticmethod
+    def _dense_cosine_similarity(left: list[float], right: list[float]) -> float:
+        if not left or not right or len(left) != len(right):
+            return 0.0
+        return sum(l_value * r_value for l_value, r_value in zip(left, right))
+
+    @staticmethod
+    def _stable_hash(token: str) -> tuple[int, float]:
+        digest = hashlib.md5(token.encode("utf-8")).digest()
+        bucket = int.from_bytes(digest[:4], "big")
+        sign = 1.0 if digest[4] % 2 == 0 else -1.0
+        return bucket, sign
+
+    def _hashed_dense_vector(self, token_counts: Counter[str], dim: int = 256) -> list[float]:
+        vector = [0.0] * dim
+        for token, count in token_counts.items():
+            bucket, sign = self._stable_hash(token)
+            vector[bucket % dim] += sign * float(count)
+        return self._normalize_dense_vector(vector)
+
+    def _build_dense_vectors(self) -> list[list[float]]:
+        if self.embedding_client is not None:
+            dense_vectors = self.embedding_client.embed_documents(self.chunks)
+            return [self._normalize_dense_vector(vector) for vector in dense_vectors]
+        return [self._hashed_dense_vector(token_counts) for token_counts in self.chunk_token_counts]
+
+    @staticmethod
+    def _normalize_scores(scores: dict[int, float]) -> dict[int, float]:
+        if not scores:
+            return {}
+
+        values = list(scores.values())
+        high = max(values)
+        low = min(values)
+        if math.isclose(high, low):
+            if high <= 0:
+                return {chunk_id: 0.0 for chunk_id in scores}
+            return {chunk_id: 1.0 for chunk_id in scores}
+
+        denominator = high - low
+        return {chunk_id: (score - low) / denominator for chunk_id, score in scores.items()}
+
+    def _keyword_scores(self, query: str) -> dict[int, float]:
+        query_token_counts = Counter(tokenize(query))
+        scores: dict[int, float] = {}
+        for index, chunk_token_counts in enumerate(self.chunk_token_counts):
+            score = self._bm25_score(
+                doc_token_counts=chunk_token_counts,
+                query_token_counts=query_token_counts,
+                doc_length=self.chunk_lengths[index],
+            )
+            if score > 0:
+                scores[index] = score
+        return scores
+
+    def _dense_scores(self, query: str) -> dict[int, float]:
+        if self.embedding_client is not None:
+            query_vector = self._normalize_dense_vector(self.embedding_client.embed_query(query))
+        else:
+            query_vector = self._hashed_dense_vector(Counter(tokenize(query)))
+
+        scores: dict[int, float] = {}
+        for index, chunk_vector in enumerate(self.chunk_dense_vectors):
+            score = self._dense_cosine_similarity(query_vector, chunk_vector)
+            if score > 0:
+                scores[index] = score
+        return scores
+
     def search(self, query: str, top_k: int = DEFAULT_TOP_K) -> list[dict[str, Any]]:
         if not query.strip():
             return []
 
-        query_vector = self._vectorize(Counter(tokenize(query)))
-        scored = []
-        for index, chunk_vector in enumerate(self.chunk_vectors):
-            score = self._cosine_similarity(query_vector, chunk_vector)
+        keyword_scores = self._keyword_scores(query)
+        dense_scores = self._dense_scores(query)
+        if not keyword_scores and not dense_scores:
+            return []
+
+        keyword_scores = self._normalize_scores(keyword_scores)
+        dense_scores = self._normalize_scores(dense_scores)
+
+        dense_weight = 1.0 - self.keyword_weight
+        candidates = set(keyword_scores) | set(dense_scores)
+        fused_scores = []
+        for chunk_id in candidates:
+            score = (
+                self.keyword_weight * keyword_scores.get(chunk_id, 0.0)
+                + dense_weight * dense_scores.get(chunk_id, 0.0)
+            )
             if score <= 0:
                 continue
-            scored.append(
+            fused_scores.append(
                 {
-                    "chunk_id": index,
+                    "chunk_id": chunk_id,
                     "score": score,
-                    "text": self.chunks[index],
+                    "text": self.chunks[chunk_id],
                 }
             )
 
-        scored.sort(key=lambda item: item["score"], reverse=True)
-        return scored[:top_k]
+        fused_scores.sort(key=lambda item: item["score"], reverse=True)
+        return fused_scores[:top_k]
 
 
 class LocalRAGInput(BaseModel):
@@ -410,12 +627,34 @@ def build_agent(docx_path: str | Path) -> Agent:
     if not dashscope_api_key:
         raise EnvironmentError("Missing DASHSCOPE_API_KEY environment variable.")
 
+    api_base = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     model = ChatOpenAI(
         model="qwen3.6-plus",
         openai_api_key=dashscope_api_key,
-        openai_api_base="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        openai_api_base=api_base,
     )
-    store = LocalRAGStore(docx_path)
+    embedding_model = os.getenv("DASHSCOPE_EMBEDDING_MODEL", "text-embedding-v3")
+    embedding_batch_size_raw = os.getenv("DASHSCOPE_EMBEDDING_BATCH_SIZE", "10")
+    keyword_weight_raw = os.getenv("RAG_KEYWORD_WEIGHT", str(DEFAULT_KEYWORD_WEIGHT))
+    try:
+        keyword_weight = float(keyword_weight_raw)
+    except ValueError:
+        keyword_weight = DEFAULT_KEYWORD_WEIGHT
+    try:
+        embedding_batch_size = int(embedding_batch_size_raw)
+    except ValueError:
+        embedding_batch_size = 10
+    embedding_client = DashScopeEmbeddingClient(
+        api_key=dashscope_api_key,
+        api_base=api_base,
+        model=embedding_model,
+        max_batch_size=embedding_batch_size,
+    )
+    store = LocalRAGStore(
+        docx_path,
+        embedding_client=embedding_client,
+        keyword_weight=keyword_weight,
+    )
     tool = LocalRAGRetrieveTool(store=store)
     return Agent(model, [tool], system=PROMPT)
 
