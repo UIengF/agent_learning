@@ -11,6 +11,7 @@ except ImportError:  # pragma: no cover - import fallback for lightweight tests
 
 from .agent import HumanMessage, build_agent
 from .config import DEFAULT_SESSION_ID, AppConfig, build_app_config
+from .user_memory import build_user_memory, merge_user_memory, save_user_memory
 
 
 def build_sqlite_checkpointer(db_path: str | Path) -> Any | None:
@@ -186,6 +187,23 @@ def run_or_resume(
     post_state = get_graph_state(agent.graph, config)
     post_next_nodes = tuple(getattr(post_state, "next", ()) or ())
     final_answer = extract_final_answer(result, post_state, agent._message_content)
+    state_values = getattr(post_state, "values", None)
+    persisted_messages = (
+        state_values.get("messages", [])
+        if isinstance(state_values, dict)
+        else extract_messages_from_result(result)
+    )
+    observed_memory = build_user_memory(
+        list(persisted_messages),
+        message_content=agent._message_content,
+        is_human_message=agent._is_human_message,
+        shorten=agent._shorten,
+    )
+    save_user_memory(
+        config_obj.runtime.user_memory_path,
+        merge_user_memory(agent.user_memory, observed_memory),
+        user_id=config_obj.runtime.user_id,
+    )
     if post_next_nodes:
         append_log(
             agent.log_path,

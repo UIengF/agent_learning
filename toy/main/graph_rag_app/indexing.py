@@ -23,6 +23,7 @@ from .retrieval import (
     EmbeddingBackend,
     LocalRAGStore,
     SearchResult,
+    rerank_results_by_metadata,
 )
 
 
@@ -240,7 +241,7 @@ class IndexedRetriever:
                 for chunk_id, score in ranked
                 if self._matches_filters(self.chunk_records[chunk_id], filters)
             ]
-            return results[:top_k]
+            return rerank_results_by_metadata(normalized_query, results, top_k=top_k)
 
         if strategy == "dense":
             dense_scores = self._normalize_scores(self._dense_scores(normalized_query))
@@ -250,7 +251,7 @@ class IndexedRetriever:
                 for chunk_id, score in ranked
                 if self._matches_filters(self.chunk_records[chunk_id], filters)
             ]
-            return results[:top_k]
+            return rerank_results_by_metadata(normalized_query, results, top_k=top_k)
 
         keyword_scores = self._normalize_scores(self._keyword_scores(normalized_query))
         dense_scores = self._normalize_scores(self._dense_scores(normalized_query))
@@ -269,7 +270,8 @@ class IndexedRetriever:
             fused_scores.append((chunk_id, score))
 
         fused_scores.sort(key=lambda item: item[1], reverse=True)
-        return [self._build_result(chunk_id, score, "hybrid") for chunk_id, score in fused_scores[:top_k]]
+        results = [self._build_result(chunk_id, score, "hybrid") for chunk_id, score in fused_scores]
+        return rerank_results_by_metadata(normalized_query, results, top_k=top_k)
 
     def search(
         self,

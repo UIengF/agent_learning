@@ -4,7 +4,7 @@ import socket
 from pathlib import Path
 from unittest import TestCase
 from unittest.mock import patch
-from urllib.parse import urlsplit
+from urllib.error import HTTPError
 from urllib.request import Request
 
 from graph_rag_app.web_fetch import (
@@ -57,13 +57,21 @@ class _FakeResponse:
 
 
 class _FakeOpener:
-    def __init__(self, response: _FakeResponse) -> None:
+    def __init__(self, response: _FakeResponse | None = None, outcomes: list[object] | None = None) -> None:
         self.response = response
+        self.outcomes = list(outcomes or ([] if response is None else [response]))
         self.calls: list[tuple[str, float | None]] = []
+        self.requests: list[Request] = []
 
     def open(self, request: Request, timeout: float | None = None) -> _FakeResponse:
         self.calls.append((request.full_url, timeout))
-        return self.response
+        self.requests.append(request)
+        if not self.outcomes:
+            raise AssertionError("No more scripted outcomes for fake opener")
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
 
 
 class WebFetchTests(TestCase):
@@ -147,6 +155,11 @@ class WebFetchTests(TestCase):
         self.assertEqual(result.title, "Example Article Title")
         self.assertEqual(result.text, "Example Article")
         self.assertTrue(result.truncated)
+        request = opener.requests[0]
+        headers = {key.lower(): value for key, value in request.header_items()}
+        self.assertEqual(headers["user-agent"], "graph-rag-agent/1.0")
+        self.assertEqual(headers["accept-language"], "en-US,en;q=0.9")
+        self.assertEqual(headers["upgrade-insecure-requests"], "1")
 
     def test_fetch_url_rejects_unsupported_content_type(self) -> None:
         fixture_path = Path(__file__).parent / "fixtures" / "web" / "article.html"
@@ -187,6 +200,57 @@ class WebFetchTests(TestCase):
 
         self.assertEqual(opener.calls, [("https://example.com/article", 2)])
         self.assertEqual(result.final_url, "http://127.0.0.1/internal")
+
+    def test_fetch_url_retries_once_after_timeout(self) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "web" / "article.html"
+        html = fixture_path.read_text(encoding="utf-8")
+        opener = _FakeOpener(
+            outcomes=[
+                socket.timeout("timed out"),
+                _FakeResponse(final_url="https://example.com/article", body=html),
+            ]
+        )
+
+        with patch("graph_rag_app.web_fetch.build_opener", return_value=opener):
+            with patch("graph_rag_app.web_fetch.time.sleep") as sleep:
+                result = fetch_url(
+                    "https://example.com/article",
+                    timeout_seconds=2,
+                    max_bytes=10_000,
+                    max_chars=16,
+                    user_agent="graph-rag-agent/1.0",
+                )
+
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(opener.calls, [("https://example.com/article", 2), ("https://example.com/article", 2)])
+        sleep.assert_called_once()
+
+    def test_fetch_url_does_not_retry_http_403(self) -> None:
+        opener = _FakeOpener(
+            outcomes=[
+                HTTPError(
+                    url="https://openai.com/news",
+                    code=403,
+                    msg="Forbidden",
+                    hdrs=None,
+                    fp=None,
+                )
+            ]
+        )
+
+        with patch("graph_rag_app.web_fetch.build_opener", return_value=opener):
+            with patch("graph_rag_app.web_fetch.time.sleep") as sleep:
+                with self.assertRaises(HTTPError):
+                    fetch_url(
+                        "https://openai.com/news",
+                        timeout_seconds=2,
+                        max_bytes=10_000,
+                        max_chars=100,
+                        user_agent="graph-rag-agent/1.0",
+                    )
+
+        self.assertEqual(opener.calls, [("https://openai.com/news", 2)])
+        sleep.assert_not_called()
 
 
 if __name__ == "__main__":

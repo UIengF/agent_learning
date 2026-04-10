@@ -59,8 +59,42 @@ class WebSearchTests(TestCase):
             "https://openai.github.io/openai-agents-python",
             "https://example.com/openai-vs-adk",
         ])
+        self.assertTrue(merged[0].is_official)
+        self.assertFalse(merged[1].is_official)
         self.assertEqual(merged[0].rank, 1)
         self.assertEqual(merged[1].rank, 2)
+
+    def test_merge_ranked_hits_prefers_query_specific_official_domain(self) -> None:
+        merged = merge_ranked_hits(
+            [
+                SearchHit(
+                    title="OpenAI News",
+                    url="https://openai.com/news",
+                    snippet="official OpenAI news",
+                    source="duckduckgo_html",
+                    rank=2,
+                ),
+                SearchHit(
+                    title="Computerworld OpenAI roundup",
+                    url="https://www.computerworld.com/article/4015023/openai-latest-news-and-insights.html",
+                    snippet="third-party roundup",
+                    source="duckduckgo_html",
+                    rank=1,
+                ),
+            ],
+            top_k=2,
+            query="recent changes OpenAI",
+        )
+
+        self.assertEqual(
+            [hit.url for hit in merged],
+            [
+                "https://openai.com/news",
+                "https://www.computerworld.com/article/4015023/openai-latest-news-and-insights.html",
+            ],
+        )
+        self.assertTrue(merged[0].is_official)
+        self.assertFalse(merged[1].is_official)
 
     def test_multi_query_backend_expands_and_merges_openai_gemini_queries(self) -> None:
         class FakeBackend:
@@ -118,6 +152,9 @@ class WebSearchTests(TestCase):
                 "https://example.com/general-comparison",
             ],
         )
+        self.assertTrue(hits[0].is_official)
+        self.assertTrue(hits[1].is_official)
+        self.assertFalse(hits[2].is_official)
 
 
 if __name__ == "__main__":

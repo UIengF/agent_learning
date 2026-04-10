@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -49,6 +50,113 @@ class Retriever(Protocol):
         top_k: int = DEFAULT_TOP_K,
     ) -> Sequence[SearchResult | Mapping[str, Any]]:
         ...
+
+
+_METADATA_STOPWORDS = {
+    "a",
+    "about",
+    "agent",
+    "agents",
+    "ai",
+    "an",
+    "and",
+    "announcement",
+    "announcements",
+    "change",
+    "changes",
+    "compare",
+    "comparison",
+    "difference",
+    "differences",
+    "for",
+    "in",
+    "latest",
+    "news",
+    "of",
+    "on",
+    "recent",
+    "the",
+    "to",
+    "update",
+    "updates",
+    "vs",
+    "what",
+}
+_HEADER_VALUE_PATTERN = re.compile(r"(?im)^\[(SOURCE|TITLE|SECTION):\s*(.*?)\]\s*$")
+
+
+def _query_focus_tokens(query: str) -> tuple[str, ...]:
+    tokens: list[str] = []
+    for token in tokenize(query):
+        normalized = token.strip().lower()
+        if not normalized or normalized.isdigit():
+            continue
+        if len(normalized) < 3:
+            continue
+        if normalized in _METADATA_STOPWORDS:
+            continue
+        tokens.append(normalized)
+    return tuple(dict.fromkeys(tokens))
+
+
+def _extract_header_metadata(text: str) -> dict[str, str]:
+    metadata: dict[str, str] = {}
+    for key, value in _HEADER_VALUE_PATTERN.findall(text):
+        metadata[key.lower()] = value.strip()
+    return metadata
+
+
+def _normalized_metadata_fields(result: SearchResult) -> tuple[str, str, str]:
+    header_metadata = _extract_header_metadata(result.text)
+    source_path = (result.source_path or header_metadata.get("source") or "").lower()
+    title = header_metadata.get("title", "").lower()
+    section_title = (result.section_title or header_metadata.get("section") or "").lower()
+    return source_path, title, section_title
+
+
+def _metadata_bonus(result: SearchResult, query_tokens: tuple[str, ...]) -> float:
+    if not query_tokens:
+        return 0.0
+
+    source_path, title, section_title = _normalized_metadata_fields(result)
+    bonus = 0.0
+    for token in query_tokens:
+        if source_path and token in source_path:
+            bonus += 0.40
+        if title and token in title:
+            bonus += 0.30
+        if section_title and token in section_title:
+            bonus += 0.20
+    return min(bonus, 2.40)
+
+
+def rerank_results_by_metadata(
+    query: str,
+    results: Sequence[SearchResult],
+    *,
+    top_k: int,
+) -> list[SearchResult]:
+    query_tokens = _query_focus_tokens(query)
+    if not results or not query_tokens:
+        return list(results)[:top_k]
+
+    reranked: list[SearchResult] = []
+    for result in results:
+        bonus = _metadata_bonus(result, query_tokens)
+        reranked.append(
+            SearchResult(
+                chunk_id=result.chunk_id,
+                score=result.score + bonus,
+                text=result.text,
+                document_id=result.document_id,
+                source_path=result.source_path,
+                section_title=result.section_title,
+                strategy=result.strategy if bonus <= 0 else f"{result.strategy}+metadata",
+            )
+        )
+
+    reranked.sort(key=lambda item: item.score, reverse=True)
+    return reranked[:top_k]
 
 
 def normalize_search_result(item: SearchResult | Mapping[str, Any]) -> SearchResult:
@@ -335,7 +443,7 @@ class LocalRAGStore:
             )
 
         fused_scores.sort(key=lambda item: item.score, reverse=True)
-        return fused_scores[:top_k]
+        return rerank_results_by_metadata(query, fused_scores, top_k=top_k)
 
     def retrieve(
         self,
@@ -354,7 +462,7 @@ class LocalRAGStore:
         if strategy == "sparse":
             sparse_scores = self._normalize_scores(self._keyword_scores(query))
             ranked = sorted(sparse_scores.items(), key=lambda item: item[1], reverse=True)[:top_k]
-            return [
+            results = [
                 SearchResult(
                     chunk_id=chunk_id,
                     score=score,
@@ -363,11 +471,12 @@ class LocalRAGStore:
                 )
                 for chunk_id, score in ranked
             ]
+            return rerank_results_by_metadata(query, results, top_k=top_k)
 
         if strategy == "dense":
             dense_scores = self._normalize_scores(self._dense_scores(query))
             ranked = sorted(dense_scores.items(), key=lambda item: item[1], reverse=True)[:top_k]
-            return [
+            results = [
                 SearchResult(
                     chunk_id=chunk_id,
                     score=score,
@@ -376,6 +485,7 @@ class LocalRAGStore:
                 )
                 for chunk_id, score in ranked
             ]
+            return rerank_results_by_metadata(query, results, top_k=top_k)
 
         raise ValueError(f"Unsupported retrieval strategy: {strategy}")
 

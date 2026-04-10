@@ -18,10 +18,11 @@ class _FakeSearchBackend:
         return [
             SearchHit(
                 title="Recent agent update",
-                url="https://example.com/agent-update",
+                url="https://openai.com/news",
                 snippet="Latest public update for the agent.",
                 source="duckduckgo_html",
                 rank=1,
+                is_official=True,
             )
         ]
 
@@ -33,7 +34,8 @@ class _FakeSearchBackend:
             "per_query_counts": [{"query": query, "result_count": 1}],
             "raw_result_count": 1,
             "merged_result_count": 1,
-            "selected_urls": ["https://example.com/agent-update"],
+            "selected_urls": ["https://openai.com/news"],
+            "official_urls": ["https://openai.com/news"],
         }
 
 
@@ -54,7 +56,8 @@ class WebToolTests(TestCase):
                 "per_query_counts": [{"query": "agent updates", "result_count": 1}],
                 "raw_result_count": 1,
                 "merged_result_count": 1,
-                "selected_urls": ["https://example.com/agent-update"],
+                "selected_urls": ["https://openai.com/news"],
+                "official_urls": ["https://openai.com/news"],
             },
         )
         self.assertEqual(
@@ -62,10 +65,11 @@ class WebToolTests(TestCase):
             [
                 {
                     "title": "Recent agent update",
-                    "url": "https://example.com/agent-update",
+                    "url": "https://openai.com/news",
                     "snippet": "Latest public update for the agent.",
                     "source": "duckduckgo_html",
                     "rank": 1,
+                    "is_official": True,
                 }
             ],
         )

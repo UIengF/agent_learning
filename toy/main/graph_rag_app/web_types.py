@@ -10,6 +10,7 @@ class SearchHit:
     snippet: str
     source: str
     rank: int
+    is_official: bool = False
 
 
 @dataclass(frozen=True)

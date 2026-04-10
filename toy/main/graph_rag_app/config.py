@@ -9,6 +9,8 @@ DEFAULT_TOP_K = 3
 DEFAULT_KEYWORD_WEIGHT = 0.5
 DEFAULT_SESSION_ID = "graph_rag_default"
 DEFAULT_CHECKPOINT_DB = "runtime/checkpoints.db"
+DEFAULT_USER_MEMORY_PATH = "runtime/user_memory.json"
+DEFAULT_USER_ID = "default_user"
 DEFAULT_MODEL_NAME = "qwen3.6-plus"
 DEFAULT_API_BASE = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 DEFAULT_EMBEDDING_MODEL = "text-embedding-v3"
@@ -18,6 +20,18 @@ DEFAULT_CHUNK_OVERLAP = 150
 DEFAULT_INDEX_VERSION = 1
 DEFAULT_INDEX_DB_FILENAME = "retrieval.sqlite3"
 DEFAULT_MANIFEST_FILENAME = "manifest.json"
+DEFAULT_MAX_RECENT_MESSAGES = 8
+DEFAULT_RECENT_FULL_TURNS = 3
+DEFAULT_MAX_CONTEXT_CHARS = 12000
+DEFAULT_MAX_CONTEXT_TOKENS = 100000
+DEFAULT_LIVE_MESSAGES_KEEP_TURNS = 1
+DEFAULT_LIVE_MESSAGES_MAX_FETCH_CHARS = 180
+DEFAULT_LIVE_MESSAGES_MAX_SEARCH_RESULTS = 3
+DEFAULT_WEB_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/136.0.0.0 Safari/537.36 graph-rag-agent/1.0"
+)
 
 
 def parse_bool_env(name: str, default: bool = False) -> bool:
@@ -86,7 +100,19 @@ class WebConfig:
     fetch_timeout_seconds: int = 15
     fetch_max_bytes: int = 1_500_000
     fetch_max_chars: int = 6000
-    user_agent: str = "graph-rag-agent/1.0"
+    user_agent: str = DEFAULT_WEB_USER_AGENT
+
+
+@dataclass(frozen=True)
+class ContextConfig:
+    max_recent_messages: int = DEFAULT_MAX_RECENT_MESSAGES
+    recent_full_turns: int = DEFAULT_RECENT_FULL_TURNS
+    max_context_chars: int = DEFAULT_MAX_CONTEXT_CHARS
+    max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS
+    live_messages_compression_enabled: bool = True
+    live_messages_keep_turns: int = DEFAULT_LIVE_MESSAGES_KEEP_TURNS
+    live_messages_max_fetch_chars: int = DEFAULT_LIVE_MESSAGES_MAX_FETCH_CHARS
+    live_messages_max_search_results: int = DEFAULT_LIVE_MESSAGES_MAX_SEARCH_RESULTS
 
 
 @dataclass(frozen=True)
@@ -100,6 +126,8 @@ class GenerationConfig:
 class RuntimeConfig:
     session_id: str = DEFAULT_SESSION_ID
     checkpoint_db: str = DEFAULT_CHECKPOINT_DB
+    user_memory_path: str = DEFAULT_USER_MEMORY_PATH
+    user_id: str = DEFAULT_USER_ID
     resume: bool = False
     interrupt_after: tuple[str, ...] = field(default_factory=tuple)
 
@@ -113,6 +141,7 @@ class AppConfig:
     web: WebConfig
     generation: GenerationConfig
     runtime: RuntimeConfig
+    context: ContextConfig = field(default_factory=ContextConfig)
 
 
 def build_app_config(
@@ -161,6 +190,40 @@ def build_app_config(
             ),
             user_agent=os.getenv("RAG_WEB_USER_AGENT", web_defaults.user_agent),
         ),
+        context=ContextConfig(
+            max_recent_messages=_parse_int(
+                os.getenv("RAG_MAX_RECENT_MESSAGES"),
+                DEFAULT_MAX_RECENT_MESSAGES,
+            ),
+            recent_full_turns=_parse_int(
+                os.getenv("RAG_RECENT_FULL_TURNS"),
+                DEFAULT_RECENT_FULL_TURNS,
+            ),
+            max_context_chars=_parse_int(
+                os.getenv("RAG_MAX_CONTEXT_CHARS"),
+                DEFAULT_MAX_CONTEXT_CHARS,
+            ),
+            max_context_tokens=_parse_int(
+                os.getenv("RAG_MAX_CONTEXT_TOKENS"),
+                DEFAULT_MAX_CONTEXT_TOKENS,
+            ),
+            live_messages_compression_enabled=parse_bool_env(
+                "RAG_LIVE_MESSAGES_COMPRESSION_ENABLED",
+                True,
+            ),
+            live_messages_keep_turns=_parse_int(
+                os.getenv("RAG_LIVE_MESSAGES_KEEP_TURNS"),
+                DEFAULT_LIVE_MESSAGES_KEEP_TURNS,
+            ),
+            live_messages_max_fetch_chars=_parse_int(
+                os.getenv("RAG_LIVE_MESSAGES_MAX_FETCH_CHARS"),
+                DEFAULT_LIVE_MESSAGES_MAX_FETCH_CHARS,
+            ),
+            live_messages_max_search_results=_parse_int(
+                os.getenv("RAG_LIVE_MESSAGES_MAX_SEARCH_RESULTS"),
+                DEFAULT_LIVE_MESSAGES_MAX_SEARCH_RESULTS,
+            ),
+        ),
         generation=GenerationConfig(
             max_rounds=_parse_int(os.getenv("RAG_MAX_ROUNDS"), GenerationConfig().max_rounds),
             min_evidence_score=_parse_float(
@@ -175,6 +238,8 @@ def build_app_config(
         runtime=RuntimeConfig(
             session_id=session_id,
             checkpoint_db=checkpoint_db,
+            user_memory_path=os.getenv("RAG_USER_MEMORY_PATH", DEFAULT_USER_MEMORY_PATH),
+            user_id=os.getenv("RAG_USER_ID", DEFAULT_USER_ID),
             resume=resume,
             interrupt_after=tuple(interrupt_after or ()),
         ),

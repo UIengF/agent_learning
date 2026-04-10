@@ -13,6 +13,7 @@ from .config import (
     DEFAULT_CHECKPOINT_DB,
     DEFAULT_INDEX_DB_FILENAME,
     DEFAULT_INDEX_VERSION,
+    DEFAULT_MAX_CONTEXT_TOKENS,
     DEFAULT_KEYWORD_WEIGHT,
     DEFAULT_MANIFEST_FILENAME,
     DEFAULT_SESSION_ID,
@@ -27,6 +28,7 @@ from .config import (
     build_app_config,
     parse_bool_env,
 )
+from .token_estimation import HeuristicTokenEstimator, select_token_estimator
 from .indexing import (
     BuildReport,
     IndexedRetriever,
@@ -82,6 +84,7 @@ __all__ = [
     "DEFAULT_CHECKPOINT_DB",
     "DEFAULT_INDEX_DB_FILENAME",
     "DEFAULT_INDEX_VERSION",
+    "DEFAULT_MAX_CONTEXT_TOKENS",
     "DEFAULT_KEYWORD_WEIGHT",
     "DEFAULT_MANIFEST_FILENAME",
     "DEFAULT_SESSION_ID",
@@ -91,6 +94,7 @@ __all__ = [
     "FetchResult",
     "evaluate_retrieval_cases",
     "GenerationConfig",
+    "HeuristicTokenEstimator",
     "hit_rate_at_k",
     "IndexBuildConfig",
     "IndexedRetriever",
@@ -141,6 +145,7 @@ __all__ = [
     "run_graph_invoke",
     "run_graph_stream",
     "run_or_resume",
+    "select_token_estimator",
     "shorten_text",
     "tokenize",
 ]

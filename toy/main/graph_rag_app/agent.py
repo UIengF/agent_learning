@@ -8,8 +8,16 @@ from typing import Any, Type
 from pydantic import BaseModel, Field, PrivateAttr
 
 from .config import AppConfig, DEFAULT_TOP_K, build_app_config
+from .context_budget import ContextBudget
+from .context_builder import ContextBuildResult, build_context_messages
+from .context_metrics import format_context_metrics
+from .evidence_cache import build_evidence_cache, format_evidence_cache, lookup_cached_tool_result
 from .indexing import load_index
 from .retrieval import Retriever, normalize_search_result
+from .session_summary import build_session_summary, format_session_summary
+from .task_state import build_task_state, format_task_state
+from .token_estimation import HeuristicTokenEstimator, select_token_estimator
+from .user_memory import UserMemory, format_user_memory, load_user_memory
 from .web_fetch import fetch_url
 from .web_search import DuckDuckGoHtmlSearchBackend, MultiQuerySearchBackend
 from .web_tools import WebFetchTool, WebSearchTool
@@ -136,6 +144,16 @@ class Agent:
         append_log: Any | None = None,
         shorten_text: Any | None = None,
         max_rounds: int = 3,
+        max_recent_messages: int | None = None,
+        recent_full_turns: int | None = None,
+        max_context_chars: int | None = None,
+        max_context_tokens: int | None = None,
+        live_messages_compression_enabled: bool = True,
+        live_messages_keep_turns: int = 1,
+        live_messages_max_fetch_chars: int = 180,
+        live_messages_max_search_results: int = 3,
+        user_memory: UserMemory | None = None,
+        token_estimator: HeuristicTokenEstimator | None = None,
     ):
         self.system = system
         self.log_path = log_path or Path("runtime") / "logs" / "graph_rag.log"
@@ -143,6 +161,24 @@ class Agent:
         self.tool_call_count = 0
         self.current_round = 0
         self.max_rounds = max(1, int(max_rounds))
+        self.max_recent_messages = (
+            max(1, int(max_recent_messages)) if max_recent_messages is not None else None
+        )
+        self.recent_full_turns = (
+            max(1, int(recent_full_turns)) if recent_full_turns is not None else 3
+        )
+        self.max_context_chars = (
+            max(200, int(max_context_chars)) if max_context_chars is not None else 12000
+        )
+        self.max_context_tokens = (
+            max(100, int(max_context_tokens)) if max_context_tokens is not None else None
+        )
+        self.live_messages_compression_enabled = bool(live_messages_compression_enabled)
+        self.live_messages_keep_turns = max(1, int(live_messages_keep_turns))
+        self.live_messages_max_fetch_chars = max(80, int(live_messages_max_fetch_chars))
+        self.live_messages_max_search_results = max(1, int(live_messages_max_search_results))
+        self.user_memory = user_memory or UserMemory()
+        self.token_estimator = token_estimator or HeuristicTokenEstimator()
         self.tools = {tool.name: tool for tool in (tools or [])}
         self.base_model = model
         self.graph = None
@@ -234,6 +270,94 @@ class Agent:
             previous_was_tool = is_tool
         return rounds
 
+    def _tool_name(self, message: AnyMessage | dict) -> str:
+        if isinstance(message, dict):
+            return str(message.get("name", "tool"))
+        return str(getattr(message, "name", "tool"))
+
+    def _trim_recent_messages(
+        self,
+        messages: list[AnyMessage | dict],
+    ) -> tuple[list[AnyMessage | dict], list[AnyMessage | dict]]:
+        if self.max_recent_messages is None or len(messages) <= self.max_recent_messages:
+            return [], messages
+
+        anchor = messages[0] if messages and self._is_human_message(messages[0]) else None
+        if anchor is None:
+            split_at = max(0, len(messages) - self.max_recent_messages)
+            return messages[:split_at], messages[split_at:]
+
+        tail_budget = max(0, self.max_recent_messages - 1)
+        tail_start = max(1, len(messages) - tail_budget)
+        tail = messages[tail_start:] if tail_budget else []
+        if any(message is anchor for message in tail):
+            return messages[:tail_start], tail
+        return messages[1:tail_start], [anchor] + tail
+
+    def _split_message_turns(self, messages: list[AnyMessage | dict]) -> list[list[AnyMessage | dict]]:
+        if not messages:
+            return []
+
+        turns: list[list[AnyMessage | dict]] = []
+        current_turn: list[AnyMessage | dict] = []
+        for message in messages:
+            if self._is_human_message(message):
+                if current_turn:
+                    turns.append(current_turn)
+                current_turn = [message]
+                continue
+
+            if not current_turn:
+                current_turn = [message]
+            else:
+                current_turn.append(message)
+
+        if current_turn:
+            turns.append(current_turn)
+        return turns
+
+    def _select_recent_turns(
+        self,
+        messages: list[AnyMessage | dict],
+    ) -> tuple[list[AnyMessage | dict], list[AnyMessage | dict]]:
+        turns = self._split_message_turns(messages)
+        if not turns or len(turns) <= self.recent_full_turns:
+            return [], messages
+
+        older_turns = turns[: -self.recent_full_turns]
+        recent_turns = turns[-self.recent_full_turns :]
+        older_messages = [message for turn in older_turns for message in turn]
+        recent_messages = [message for turn in recent_turns for message in turn]
+        return older_messages, recent_messages
+
+    def _build_session_summary(self, messages: list[AnyMessage | dict]):
+        return build_session_summary(
+            messages,
+            message_content=self._message_content,
+            message_role=self._message_role,
+            is_tool_message=self._is_tool_message,
+            is_human_message=self._is_human_message,
+            tool_name=self._tool_name,
+            shorten=self._shorten,
+        )
+
+    def _build_task_state(self, messages: list[AnyMessage | dict]):
+        return build_task_state(
+            messages,
+            message_content=self._message_content,
+            is_tool_message=self._is_tool_message,
+            is_human_message=self._is_human_message,
+            tool_name=self._tool_name,
+        )
+
+    def _build_evidence_cache(self, messages: list[AnyMessage | dict]):
+        return build_evidence_cache(
+            messages,
+            message_content=self._message_content,
+            is_tool_message=self._is_tool_message,
+            tool_name=self._tool_name,
+        )
+
     @staticmethod
     def _tool_limit_message_text() -> str:
         return (
@@ -281,33 +405,189 @@ class Agent:
 
         return {"role": "assistant", "content": updated_content, "tool_calls": tool_calls}
 
+    @staticmethod
+    def _parse_tool_payload(content: str) -> dict[str, Any]:
+        try:
+            payload = json.loads(content)
+        except Exception:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _failed_web_fetch_urls(self, state: AgentState) -> set[str]:
+        failed_urls: set[str] = set()
+        for message in self._current_call_messages(state):
+            if not self._is_tool_message(message):
+                continue
+            if self._tool_name(message) != "web_fetch":
+                continue
+            payload = self._parse_tool_payload(self._message_content(message))
+            if payload.get("error") != "tool_execution_failed":
+                continue
+            tool_args = payload.get("tool_args", {})
+            if not isinstance(tool_args, dict):
+                continue
+            url = str(tool_args.get("url", "")).strip()
+            if url:
+                failed_urls.add(url)
+        return failed_urls
+
+    def _official_search_urls(self, state: AgentState) -> list[str]:
+        for message in reversed(self._current_call_messages(state)):
+            if not self._is_tool_message(message):
+                continue
+            if self._tool_name(message) != "web_search":
+                continue
+
+            payload = self._parse_tool_payload(self._message_content(message))
+            urls: list[str] = []
+            results = payload.get("results", [])
+            if isinstance(results, list):
+                for result in results:
+                    if not isinstance(result, dict):
+                        continue
+                    if not result.get("is_official"):
+                        continue
+                    url = str(result.get("url", "")).strip()
+                    if url:
+                        urls.append(url)
+
+            debug = payload.get("debug", {})
+            if isinstance(debug, dict):
+                official_urls = debug.get("official_urls", [])
+                if isinstance(official_urls, list):
+                    for item in official_urls:
+                        url = str(item).strip()
+                        if url and url not in urls:
+                            urls.append(url)
+            return urls
+        return []
+
+    def _apply_official_first_fetch_policy(
+        self,
+        state: AgentState,
+        message: Any,
+        tool_calls: list[dict[str, Any]],
+    ) -> tuple[Any, list[dict[str, Any]]]:
+        official_urls = self._official_search_urls(state)
+        if not official_urls:
+            return message, tool_calls
+        failed_urls = self._failed_web_fetch_urls(state)
+        preferred_url = next((url for url in official_urls if url not in failed_urls), None)
+        if not preferred_url:
+            return message, tool_calls
+
+        first_fetch_index: int | None = None
+        official_fetch_present = False
+        updated_tool_calls: list[dict[str, Any]] = []
+        for index, tool_call in enumerate(tool_calls):
+            copied_call = dict(tool_call)
+            copied_args = dict(tool_call.get("args", {}))
+            copied_call["args"] = copied_args
+            updated_tool_calls.append(copied_call)
+
+            if copied_call.get("name") != "web_fetch":
+                continue
+
+            url = str(copied_args.get("url", "")).strip()
+            if url == preferred_url:
+                official_fetch_present = True
+            elif first_fetch_index is None:
+                first_fetch_index = index
+
+        if official_fetch_present or first_fetch_index is None:
+            return message, tool_calls
+
+        original_url = str(updated_tool_calls[first_fetch_index]["args"].get("url", "")).strip()
+        updated_tool_calls[first_fetch_index]["args"]["url"] = preferred_url
+        self._append(
+            "Official-first fetch policy\n"
+            f"Rewrote web_fetch URL from {original_url} to {preferred_url}"
+        )
+        return self._replace_tool_calls(message, updated_tool_calls), updated_tool_calls
+
     def exists_action(self, state: AgentState):
         result = state["messages"][-1]
         return len(getattr(result, "tool_calls", [])) > 0
 
     @staticmethod
-    def build_reflection_prompt(tool_results: list[ToolMessage]) -> str:
+    def build_reflection_prompt(tool_results: list[AnyMessage | dict]) -> str:
         result_blocks = []
         for index, message in enumerate(tool_results, start=1):
-            result_blocks.append(f"Tool result {index} ({message.name}):\n{message.content}")
+            if isinstance(message, dict):
+                name = str(message.get("name", "tool"))
+                content = str(message.get("content", ""))
+            else:
+                name = str(getattr(message, "name", "tool"))
+                content = str(getattr(message, "content", ""))
+            result_blocks.append(f"Tool result {index} ({name}):\n{content}")
         return REFLECTION_PROMPT_TEMPLATE + "\n\n" + "\n\n".join(result_blocks)
 
-    def build_llm_messages(self, state: AgentState) -> list[AnyMessage]:
-        messages = list(state["messages"])
+    def build_context_result(self, state: AgentState) -> ContextBuildResult:
+        trimmed_messages, base_messages = self._select_recent_turns(list(state["messages"]))
+        evidence_cache = self._build_evidence_cache(list(state["messages"]))
         tool_results = []
-        for message in reversed(messages):
-            if ToolMessage is not None and isinstance(message, ToolMessage):
+        for message in reversed(base_messages):
+            if self._is_tool_message(message):
                 tool_results.append(message)
                 continue
             break
 
-        if tool_results and HumanMessage is not None:
-            tool_results.reverse()
-            messages.append(HumanMessage(content=self.build_reflection_prompt(tool_results)))
+        summary = self._build_session_summary(trimmed_messages)
+        summary_text = None
+        if summary is not None:
+            summary_text = format_session_summary(
+                summary,
+                shorten=self._shorten,
+                max_chars=self.max_context_chars,
+            )
 
-        if self.system and SystemMessage is not None:
-            messages = [SystemMessage(content=self.system)] + messages
-        return messages
+        user_memory_text = format_user_memory(
+            self.user_memory,
+            shorten=self._shorten,
+            max_chars=self.max_context_chars,
+        )
+
+        evidence_cache_text = format_evidence_cache(evidence_cache)
+
+        task_state = self._build_task_state(base_messages)
+        task_state_text = None
+        if task_state is not None:
+            task_state_text = format_task_state(
+                task_state,
+                shorten=self._shorten,
+                max_chars=self.max_context_chars,
+            )
+        reflection_text = None
+        if tool_results:
+            tool_results.reverse()
+            reflection_text = self.build_reflection_prompt(tool_results)
+
+        return build_context_messages(
+            base_messages=base_messages,
+            system_text=self.system,
+            summary_text=summary_text,
+            user_memory_text=user_memory_text,
+            evidence_cache_text=evidence_cache_text,
+            task_state_text=task_state_text,
+            reflection_text=reflection_text,
+            budget=ContextBudget(
+                max_chars=self.max_context_chars,
+                max_tokens=self.max_context_tokens,
+            ),
+            shorten=self._shorten,
+            message_content=self._message_content,
+            message_role=self._message_role,
+            token_estimator=self.token_estimator,
+            live_messages_compression_enabled=self.live_messages_compression_enabled,
+            live_messages_keep_turns=self.live_messages_keep_turns,
+            live_messages_max_fetch_chars=self.live_messages_max_fetch_chars,
+            live_messages_max_search_results=self.live_messages_max_search_results,
+            system_message_factory=SystemMessage,
+            human_message_factory=HumanMessage,
+        )
+
+    def build_llm_messages(self, state: AgentState) -> list[AnyMessage]:
+        return self.build_context_result(state).messages
 
     def call_openai(self, state: AgentState):
         if self.model is None:
@@ -321,7 +601,8 @@ class Agent:
             )
             self.current_round += 1
 
-        messages = self.build_llm_messages(state)
+        context_result = self.build_context_result(state)
+        messages = context_result.messages
         self.model_call_count += 1
         role = self._message_role(last_message)
         content = self._shorten(self._message_content(last_message), 800)
@@ -329,6 +610,8 @@ class Agent:
             self.current_round = 1
             self.log_round_header("Start analyzing the user question")
 
+        if context_result.metrics is not None:
+            self._append(format_context_metrics(context_result.metrics))
         self._append(f"LLM input source: {role}\nLLM input content:\n{content}")
         message = self.model.invoke(messages)
         response_text = self._message_content(message)
@@ -342,6 +625,9 @@ class Agent:
                 f"Limited output:\n{limited_content}"
             )
             return {"messages": [self._finalize_without_tool_calls(message, limited_content)]}
+
+        if tool_calls:
+            message, tool_calls = self._apply_official_first_fetch_policy(state, message, tool_calls)
 
         if tool_calls:
             first_query = tool_calls[0].get("args", {}).get("query", "")
@@ -360,13 +646,22 @@ class Agent:
 
     def take_action(self, state: AgentState):
         tool_calls = state["messages"][-1].tool_calls
+        evidence_cache = self._build_evidence_cache(list(state["messages"]))
         results = []
         for tool_call in tool_calls:
             self.tool_call_count += 1
             tool_args = tool_call.get("args", {})
             serialized_args = json.dumps(tool_args, ensure_ascii=False, sort_keys=True)
             self._append(f"Tool call\nName: {tool_call['name']}\nArgs: {serialized_args}")
-            if tool_call["name"] not in self.tools:
+            cached_result = lookup_cached_tool_result(
+                evidence_cache,
+                tool_name=tool_call["name"],
+                tool_args=tool_args,
+            )
+            if cached_result is not None:
+                self._append(f"Tool cache hit\nName: {tool_call['name']}")
+                result = cached_result
+            elif tool_call["name"] not in self.tools:
                 result = json.dumps(
                     {
                         "error": "invalid_tool",
@@ -460,4 +755,17 @@ def build_agent(
         append_log=append_log,
         shorten_text=shorten_text,
         max_rounds=config.generation.max_rounds,
+        max_recent_messages=config.context.max_recent_messages,
+        recent_full_turns=config.context.recent_full_turns,
+        max_context_chars=config.context.max_context_chars,
+        max_context_tokens=config.context.max_context_tokens,
+        live_messages_compression_enabled=config.context.live_messages_compression_enabled,
+        live_messages_keep_turns=config.context.live_messages_keep_turns,
+        live_messages_max_fetch_chars=config.context.live_messages_max_fetch_chars,
+        live_messages_max_search_results=config.context.live_messages_max_search_results,
+        user_memory=load_user_memory(
+            config.runtime.user_memory_path,
+            user_id=config.runtime.user_id,
+        ),
+        token_estimator=select_token_estimator(config.model.model_name),
     )

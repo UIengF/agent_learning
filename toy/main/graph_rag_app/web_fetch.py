@@ -1,11 +1,37 @@
 from __future__ import annotations
 
 from html.parser import HTMLParser
+import socket
+import time
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, build_opener
 
 from .web_types import FetchResult
 
 _NOISE_TAGS = {"script", "style", "noscript", "template", "header", "footer", "nav", "aside"}
+_DEFAULT_FETCH_ATTEMPTS = 2
+_RETRYABLE_HTTP_STATUSES = {408, 425, 429, 500, 502, 503, 504}
+
+
+def _build_fetch_headers(user_agent: str) -> dict[str, str]:
+    return {
+        "User-Agent": user_agent,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "Upgrade-Insecure-Requests": "1",
+    }
+
+
+def _is_retryable_fetch_error(exc: Exception) -> bool:
+    if isinstance(exc, HTTPError):
+        return exc.code in _RETRYABLE_HTTP_STATUSES
+    if isinstance(exc, (TimeoutError, socket.timeout, URLError)):
+        return True
+    return False
+
+
 def truncate_text(text: str, max_chars: int) -> tuple[str, bool]:
     compacted = " ".join(text.split())
     if max_chars < 0:
@@ -45,23 +71,33 @@ def fetch_url(
     if max_bytes < 0:
         raise ValueError("max_bytes must be non-negative")
 
-    request = Request(
-        url,
-        headers={"User-Agent": user_agent, "Accept": "text/html,application/xhtml+xml"},
-    )
     opener = build_opener()
-    with opener.open(request, timeout=timeout_seconds) as response:
-        final_url = response.geturl()
-        status_code = response.status
-        content_type = response.headers.get_content_type()
-        if content_type != "text/html":
-            raise ValueError(f"unsupported content type: {content_type}")
+    last_error: Exception | None = None
+    for attempt in range(_DEFAULT_FETCH_ATTEMPTS):
+        request = Request(url, headers=_build_fetch_headers(user_agent))
+        try:
+            with opener.open(request, timeout=timeout_seconds) as response:
+                final_url = response.geturl()
+                status_code = response.status
+                content_type = response.headers.get_content_type()
+                if content_type != "text/html":
+                    raise ValueError(f"unsupported content type: {content_type}")
 
-        raw = response.read(max_bytes + 1 if max_bytes else 1)
-        bytes_truncated = len(raw) > max_bytes if max_bytes else bool(raw)
-        html_bytes = raw[:max_bytes] if max_bytes else b""
-        charset = response.headers.get_content_charset() or "utf-8"
-        html = html_bytes.decode(charset, errors="replace")
+                raw = response.read(max_bytes + 1 if max_bytes else 1)
+                bytes_truncated = len(raw) > max_bytes if max_bytes else bool(raw)
+                html_bytes = raw[:max_bytes] if max_bytes else b""
+                charset = response.headers.get_content_charset() or "utf-8"
+                html = html_bytes.decode(charset, errors="replace")
+            break
+        except Exception as exc:
+            last_error = exc
+            if attempt + 1 >= _DEFAULT_FETCH_ATTEMPTS or not _is_retryable_fetch_error(exc):
+                raise
+            time.sleep(min(0.25 * (2**attempt), 1.0))
+    else:  # pragma: no cover - loop always breaks or raises
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("fetch_url exhausted attempts without a result")
 
     extracted = extract_main_text(html)
     text, chars_truncated = truncate_text(extracted["text"], max_chars)

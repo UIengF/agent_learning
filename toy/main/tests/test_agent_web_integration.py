@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from unittest import TestCase
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 from graph_rag_app.agent import Agent, build_agent
 from graph_rag_app.config import (
@@ -17,6 +17,7 @@ from graph_rag_app.config import (
 )
 from graph_rag_app.web_search import MultiQuerySearchBackend
 from graph_rag_app.web_types import FetchResult
+from graph_rag_app.user_memory import UserMemory
 
 
 class _ToolCallCarrier:
@@ -118,6 +119,16 @@ class AgentWebIntegrationTests(TestCase):
             append_log=None,
             shorten_text=None,
             max_rounds=4,
+            max_recent_messages=8,
+            recent_full_turns=3,
+            max_context_chars=12000,
+            max_context_tokens=100000,
+            live_messages_compression_enabled=True,
+            live_messages_keep_turns=1,
+            live_messages_max_fetch_chars=180,
+            live_messages_max_search_results=3,
+            user_memory=ANY,
+            token_estimator=ANY,
         )
 
     def test_take_action_converts_tool_failures_into_tool_messages(self) -> None:
