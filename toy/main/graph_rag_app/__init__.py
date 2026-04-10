@@ -54,6 +54,10 @@ from .retrieval import (
     Retriever,
     SearchResult,
 )
+from .web_fetch import fetch_url
+from .web_search import DuckDuckGoHtmlSearchBackend
+from .web_tools import WebFetchInput, WebFetchTool, WebSearchInput, WebSearchTool
+from .web_types import FetchResult
 from .runtime import (
     append_log,
     build_sqlite_checkpointer,
@@ -84,6 +88,7 @@ __all__ = [
     "DEFAULT_TOP_K",
     "EmbeddingBackend",
     "EmbeddingConfig",
+    "FetchResult",
     "evaluate_retrieval_cases",
     "GenerationConfig",
     "hit_rate_at_k",
@@ -100,6 +105,11 @@ __all__ = [
     "RetrievalRuntimeConfig",
     "RuntimeConfig",
     "SearchResult",
+    "DuckDuckGoHtmlSearchBackend",
+    "WebFetchInput",
+    "WebFetchTool",
+    "WebSearchInput",
+    "WebSearchTool",
     "append_log",
     "build_agent",
     "build_app_config",
@@ -111,6 +121,7 @@ __all__ = [
     "ensure_log_file",
     "extract_final_answer",
     "extract_messages_from_result",
+    "fetch_url",
     "get_graph_state",
     "get_thread_config",
     "inspect_index",

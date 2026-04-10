@@ -55,13 +55,12 @@ class AgentToolLimitTests(unittest.TestCase):
 
         self.assertEqual(result["messages"][0].tool_calls[0]["name"], "local_rag_retrieve")
 
-    def test_other_tool_is_allowed_after_search_hits_limit(self) -> None:
+    def test_other_tool_is_allowed_before_total_limit_is_exhausted(self) -> None:
         state = {
             "messages": [
                 {"role": "human", "content": "question"},
                 *_tool_round("local_rag_retrieve", query="q1", call_id="1"),
                 *_tool_round("local_rag_retrieve", query="q2", call_id="2"),
-                *_tool_round("local_rag_retrieve", query="q3", call_id="3"),
             ]
         }
         agent = self._build_agent([{"id": "4", "name": "web_search", "args": {"query": "next"}}])
@@ -70,32 +69,30 @@ class AgentToolLimitTests(unittest.TestCase):
 
         self.assertEqual(result["messages"][0].tool_calls[0]["name"], "web_search")
 
-    def test_same_tool_is_blocked_after_consecutive_limit(self) -> None:
+    def test_any_tool_is_blocked_after_total_limit_is_reached(self) -> None:
         state = {
             "messages": [
                 {"role": "human", "content": "question"},
                 *_tool_round("local_rag_retrieve", query="q1", call_id="1"),
-                *_tool_round("local_rag_retrieve", query="q2", call_id="2"),
+                *_tool_round("web_search", query="q2", call_id="2"),
                 *_tool_round("local_rag_retrieve", query="q3", call_id="3"),
             ]
         }
-        agent = self._build_agent(
-            [{"id": "4", "name": "local_rag_retrieve", "args": {"query": "repeat"}}]
-        )
+        agent = self._build_agent([{"id": "4", "name": "web_fetch", "args": {"url": "https://example.com"}}])
 
         result = agent.call_openai(state)
         message = result["messages"][0]
 
         self.assertEqual(message.tool_calls, [])
-        self.assertIn("已达到最大检索轮次", message.content)
+        self.assertIn("The tool call limit has been reached.", message.content)
 
-    def test_blocked_tool_is_filtered_when_other_tool_is_available(self) -> None:
+    def test_total_limit_blocks_all_requested_tools_after_alternating_history(self) -> None:
         state = {
             "messages": [
                 {"role": "human", "content": "question"},
                 *_tool_round("local_rag_retrieve", query="q1", call_id="1"),
-                *_tool_round("local_rag_retrieve", query="q2", call_id="2"),
-                *_tool_round("local_rag_retrieve", query="q3", call_id="3"),
+                *_tool_round("web_search", query="q2", call_id="2"),
+                *_tool_round("web_fetch", query="https://example.com/3", call_id="3"),
             ]
         }
         agent = self._build_agent(
@@ -106,11 +103,10 @@ class AgentToolLimitTests(unittest.TestCase):
         )
 
         result = agent.call_openai(state)
+        message = result["messages"][0]
 
-        self.assertEqual(
-            [tool_call["name"] for tool_call in result["messages"][0].tool_calls],
-            ["web_search"],
-        )
+        self.assertEqual(message.tool_calls, [])
+        self.assertIn("The tool call limit has been reached.", message.content)
 
 
 if __name__ == "__main__":

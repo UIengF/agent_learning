@@ -79,6 +79,17 @@ class RetrievalRuntimeConfig:
 
 
 @dataclass(frozen=True)
+class WebConfig:
+    enabled: bool = True
+    search_provider: str = "duckduckgo_html"
+    search_top_k: int = 5
+    fetch_timeout_seconds: int = 15
+    fetch_max_bytes: int = 1_500_000
+    fetch_max_chars: int = 6000
+    user_agent: str = "graph-rag-agent/1.0"
+
+
+@dataclass(frozen=True)
 class GenerationConfig:
     max_rounds: int = 3
     min_evidence_score: float = 0.0
@@ -99,6 +110,7 @@ class AppConfig:
     model: ModelConfig
     embedding: EmbeddingConfig
     retrieval: RetrievalConfig
+    web: WebConfig
     generation: GenerationConfig
     runtime: RuntimeConfig
 
@@ -111,6 +123,7 @@ def build_app_config(
     resume: bool = False,
     interrupt_after: list[str] | tuple[str, ...] | None = None,
 ) -> AppConfig:
+    web_defaults = WebConfig()
     return AppConfig(
         kb_path=Path(kb_path),
         model=ModelConfig(api_key=os.getenv("DASHSCOPE_API_KEY", "")),
@@ -126,6 +139,27 @@ def build_app_config(
                 os.getenv("RAG_KEYWORD_WEIGHT"),
                 DEFAULT_KEYWORD_WEIGHT,
             ),
+        ),
+        web=WebConfig(
+            enabled=parse_bool_env("RAG_WEB_ENABLED", web_defaults.enabled),
+            search_provider=os.getenv("RAG_WEB_SEARCH_PROVIDER", web_defaults.search_provider),
+            search_top_k=_parse_int(
+                os.getenv("RAG_WEB_SEARCH_TOP_K"),
+                web_defaults.search_top_k,
+            ),
+            fetch_timeout_seconds=_parse_int(
+                os.getenv("RAG_WEB_FETCH_TIMEOUT_SECONDS"),
+                web_defaults.fetch_timeout_seconds,
+            ),
+            fetch_max_bytes=_parse_int(
+                os.getenv("RAG_WEB_FETCH_MAX_BYTES"),
+                web_defaults.fetch_max_bytes,
+            ),
+            fetch_max_chars=_parse_int(
+                os.getenv("RAG_WEB_FETCH_MAX_CHARS"),
+                web_defaults.fetch_max_chars,
+            ),
+            user_agent=os.getenv("RAG_WEB_USER_AGENT", web_defaults.user_agent),
         ),
         generation=GenerationConfig(
             max_rounds=_parse_int(os.getenv("RAG_MAX_ROUNDS"), GenerationConfig().max_rounds),

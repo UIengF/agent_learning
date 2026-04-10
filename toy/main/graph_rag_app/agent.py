@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Type
 
 from pydantic import BaseModel, Field, PrivateAttr
 
 from .config import AppConfig, DEFAULT_TOP_K, build_app_config
-from .indexing import ensure_index_for_kb, load_index
-from .retrieval import DashScopeEmbeddingClient, Retriever, normalize_search_result
+from .indexing import load_index
+from .retrieval import Retriever, normalize_search_result
+from .web_fetch import fetch_url
+from .web_search import DuckDuckGoHtmlSearchBackend, MultiQuerySearchBackend
+from .web_tools import WebFetchTool, WebSearchTool
 
 try:
     import operator
@@ -23,9 +26,26 @@ try:
     LANGGRAPH_AVAILABLE = True
 except ImportError:  # pragma: no cover - keep helper tests importable without full runtime deps
     AnyMessage = Any
-    HumanMessage = None
-    SystemMessage = None
-    ToolMessage = None
+
+    @dataclass
+    class _FallbackMessage:
+        content: str = ""
+        type: str = "assistant"
+
+    @dataclass
+    class HumanMessage(_FallbackMessage):
+        type: str = "human"
+
+    @dataclass
+    class SystemMessage(_FallbackMessage):
+        type: str = "system"
+
+    @dataclass
+    class ToolMessage(_FallbackMessage):
+        tool_call_id: str = ""
+        name: str = ""
+        type: str = "tool"
+
     BaseTool = object  # type: ignore[assignment]
     ChatOpenAI = None
     StateGraph = None
@@ -37,22 +57,28 @@ except ImportError:  # pragma: no cover - keep helper tests importable without f
 
 
 PROMPT = """\
-你是一个基于本地知识库回答问题的研究助手。你可以调用本地检索工具查找相关片段，
-但只有在当前证据不足时才继续检索。回答时只能依据检索结果中的内容，不要编造知识库中
-没有出现的事实。如果证据不足，请明确说明缺少什么信息。如果检索结果里存在多个可能答案、
-多个时间点或多个场景，请先指出歧义，再分别说明，并尽量标注引用的片段编号。"""
+You are a research assistant that answers questions using grounded evidence.
+
+Use `local_rag_retrieve` first for information that may already exist in the local knowledge base.
+Use `web_search` only for recent public information or when local evidence is missing.
+Do not answer detailed factual questions from search snippets alone. If a snippet suggests the needed evidence is on a page, call `web_fetch` before relying on it.
+
+Do not invent facts that are not supported by tool results. If evidence is incomplete, say what is missing.
+If results contain multiple plausible answers, dates, or scenarios, call that out clearly before answering.
+"""
 
 REFLECTION_PROMPT_TEMPLATE = """\
-你刚收到一轮本地知识库检索结果。请先判断：
-1. 当前结果已经回答了什么；
-2. 还缺少哪些完成任务必须的信息；
-3. 下一步最小必要动作是什么。
+You just received tool results. First decide:
+1. What is already answered by the current evidence?
+2. What information is still missing to complete the task?
+3. What is the smallest necessary next step?
 
-如果当前证据已经足够，请直接基于检索结果回答，不要继续调用工具。
-如果证据不足且必须继续检索，请改写出更具体的新查询，再调用工具。
-不要把检索结果中没有出现的事实当作已知事实。
-如果结果中存在多个可能答案、多个时间点或多个场景，请先指出歧义，再分别说明，
-并尽量标注引用的片段编号。"""
+If the current evidence is sufficient, answer directly and do not call another tool.
+If the evidence is insufficient, make the next query or fetch step more specific.
+Do not treat unsupported facts as known facts.
+If search snippets hint at needed details on a page, fetch the page before relying on those details.
+If multiple answers, dates, or scenarios are plausible, explain that clearly.
+"""
 
 
 if LANGGRAPH_AVAILABLE:
@@ -63,13 +89,13 @@ else:
 
 
 class LocalRAGInput(BaseModel):
-    query: str = Field(..., description="用于检索本地知识库的查询")
-    top_k: int = Field(DEFAULT_TOP_K, ge=1, le=8, description="返回的相关片段数量")
+    query: str = Field(..., description="Query used to search the local knowledge base.")
+    top_k: int = Field(DEFAULT_TOP_K, ge=1, le=8, description="Number of relevant passages to return.")
 
 
 class LocalRAGRetrieveTool(BaseTool):
     name: str = "local_rag_retrieve"
-    description: str = "从本地知识库中检索相关片段"
+    description: str = "Retrieve relevant passages from the local knowledge base."
     args_schema: Type[BaseModel] = LocalRAGInput
 
     _store: Retriever = PrivateAttr()
@@ -172,7 +198,7 @@ class Agent:
         return self._shorten_text(text, max_len)
 
     def log_round_header(self, title: str) -> None:
-        self._append(f"===== 第 {self.current_round} 轮 =====\n{title}")
+        self._append(f"===== Round {self.current_round} =====\n{title}")
 
     @staticmethod
     def _is_tool_message(message: AnyMessage | dict) -> bool:
@@ -190,12 +216,6 @@ class Agent:
             return str(message.get("role", "")).lower() in {"human", "user"}
         return str(getattr(message, "type", "")).lower() in {"human", "user"}
 
-    @staticmethod
-    def _tool_message_name(message: AnyMessage | dict) -> str:
-        if isinstance(message, dict):
-            return str(message.get("name", ""))
-        return str(getattr(message, "name", ""))
-
     def _current_call_messages(self, state: AgentState) -> list[AnyMessage | dict]:
         messages = list(state["messages"])
         for index in range(len(messages) - 1, -1, -1):
@@ -203,41 +223,23 @@ class Agent:
                 return messages[index:]
         return messages
 
-    def _consecutive_tool_rounds_in_current_call(
-        self,
-        state: AgentState,
-        tool_name: str,
-    ) -> int:
-        if not tool_name:
-            return 0
-
+    def _tool_rounds_in_current_call(self, state: AgentState) -> int:
         messages = self._current_call_messages(state)
-        index = len(messages) - 1
         rounds = 0
-
-        while index >= 0:
-            if not self._is_tool_message(messages[index]):
-                break
-
-            block_names: set[str] = set()
-            while index >= 0 and self._is_tool_message(messages[index]):
-                name = self._tool_message_name(messages[index])
-                if name:
-                    block_names.add(name)
-                index -= 1
-
-            if block_names != {tool_name}:
-                break
-
-            rounds += 1
-            while index >= 0 and not self._is_tool_message(messages[index]):
-                index -= 1
-
+        previous_was_tool = False
+        for message in messages:
+            is_tool = self._is_tool_message(message)
+            if is_tool and not previous_was_tool:
+                rounds += 1
+            previous_was_tool = is_tool
         return rounds
 
     @staticmethod
     def _tool_limit_message_text() -> str:
-        return "已达到最大检索轮次，当前证据仍不足，无法继续检索。请基于现有证据回答，并明确说明不确定性。"
+        return (
+            "The tool call limit has been reached. Please answer using the available evidence "
+            "and clearly state any uncertainty."
+        )
 
     def _finalize_without_tool_calls(self, message: Any, content: str) -> Any:
         try:
@@ -287,7 +289,7 @@ class Agent:
     def build_reflection_prompt(tool_results: list[ToolMessage]) -> str:
         result_blocks = []
         for index, message in enumerate(tool_results, start=1):
-            result_blocks.append(f"检索结果 {index}（{message.name}）:\n{message.content}")
+            result_blocks.append(f"Tool result {index} ({message.name}):\n{message.content}")
         return REFLECTION_PROMPT_TEMPLATE + "\n\n" + "\n\n".join(result_blocks)
 
     def build_llm_messages(self, state: AgentState) -> list[AnyMessage]:
@@ -313,9 +315,9 @@ class Agent:
 
         last_message = state["messages"][-1]
         if ToolMessage is not None and isinstance(last_message, ToolMessage):
-            self._append("反思阶段\n模型将基于当前检索结果判断是继续检索还是直接回答。")
+            self._append("Reflection step\nThe model will decide whether to continue using tools or answer directly.")
             self._append(
-                f"反思提示:\n{self._shorten(self.build_reflection_prompt([last_message]), 1200)}"
+                f"Reflection prompt\n{self._shorten(self.build_reflection_prompt([last_message]), 1200)}"
             )
             self.current_round += 1
 
@@ -325,74 +327,69 @@ class Agent:
         content = self._shorten(self._message_content(last_message), 800)
         if self.model_call_count == 1:
             self.current_round = 1
-            self.log_round_header("开始分析用户问题")
+            self.log_round_header("Start analyzing the user question")
 
-        self._append(f"LLM 输入来源: {role}\nLLM 输入内容:\n{content}")
+        self._append(f"LLM input source: {role}\nLLM input content:\n{content}")
         message = self.model.invoke(messages)
         response_text = self._message_content(message)
         tool_calls = getattr(message, "tool_calls", [])
-        blocked_tools = []
-        allowed_tool_calls = []
-        for tool_call in tool_calls:
-            tool_name = str(tool_call.get("name", ""))
-            consecutive_rounds = self._consecutive_tool_rounds_in_current_call(state, tool_name)
-            if consecutive_rounds >= self.max_rounds:
-                blocked_tools.append((tool_name, consecutive_rounds))
-            else:
-                allowed_tool_calls.append(tool_call)
-        completed_rounds = blocked_tools[0][1] if blocked_tools else 0
-        if tool_calls and not allowed_tool_calls:
+        completed_rounds = self._tool_rounds_in_current_call(state)
+        if tool_calls and completed_rounds >= self.max_rounds:
             limited_content = self._tool_limit_message_text()
             self._append(
-                "LLM 决策: 达到最大检索轮次，停止继续检索\n"
-                f"已完成轮次: {completed_rounds}\n"
-                f"限制后输出:\n{limited_content}"
+                "LLM decision: stop calling tools because the limit was reached.\n"
+                f"Completed rounds: {completed_rounds}\n"
+                f"Limited output:\n{limited_content}"
             )
             return {"messages": [self._finalize_without_tool_calls(message, limited_content)]}
-
-        if blocked_tools:
-            message = self._replace_tool_calls(message, allowed_tool_calls)
-            tool_calls = allowed_tool_calls
 
         if tool_calls:
             first_query = tool_calls[0].get("args", {}).get("query", "")
             self._append(
-                "LLM 决策: 继续检索本地知识库\n"
-                f"本轮检索意图:\n{self._shorten(response_text, 500)}\n"
-                f"生成查询:\n{first_query}"
+                "LLM decision: continue with tool use.\n"
+                f"Intent for this round:\n{self._shorten(response_text, 500)}\n"
+                f"Primary query:\n{first_query}"
             )
         else:
             self._append(
-                "LLM 决策: 直接给出答案\n"
-                f"输出摘要:\n{self._shorten(response_text, 800)}"
+                "LLM decision: answer directly.\n"
+                f"Output summary:\n{self._shorten(response_text, 800)}"
             )
-        self._append(f"LLM 原始输出:\n{self._shorten(response_text, 1200)}")
+        self._append(f"LLM raw output:\n{self._shorten(response_text, 1200)}")
         return {"messages": [message]}
 
     def take_action(self, state: AgentState):
-        if ToolMessage is None:
-            raise RuntimeError("langchain_core is required for tool execution.")
-
         tool_calls = state["messages"][-1].tool_calls
         results = []
         for tool_call in tool_calls:
             self.tool_call_count += 1
-            query = tool_call.get("args", {}).get("query", "")
-            top_k = tool_call.get("args", {}).get("top_k", DEFAULT_TOP_K)
-            self._append(f"检索调用\n名称: {tool_call['name']}\n查询: {query}\ntop_k: {top_k}")
+            tool_args = tool_call.get("args", {})
+            serialized_args = json.dumps(tool_args, ensure_ascii=False, sort_keys=True)
+            self._append(f"Tool call\nName: {tool_call['name']}\nArgs: {serialized_args}")
             if tool_call["name"] not in self.tools:
                 result = json.dumps(
                     {
-                        "query": query,
-                        "result_count": 0,
-                        "reason": "invalid_tool",
-                        "results": [],
+                        "error": "invalid_tool",
+                        "tool_name": tool_call["name"],
+                        "tool_args": tool_args,
                     },
                     ensure_ascii=False,
                 )
             else:
-                result = self.tools[tool_call["name"]].invoke(tool_call["args"])
-            self._append(f"原始检索结果:\n{str(result)}")
+                try:
+                    result = self.tools[tool_call["name"]].invoke(tool_args)
+                except Exception as exc:
+                    result = json.dumps(
+                        {
+                            "error": "tool_execution_failed",
+                            "tool_name": tool_call["name"],
+                            "tool_args": tool_args,
+                            "error_type": exc.__class__.__name__,
+                            "message": str(exc),
+                        },
+                        ensure_ascii=False,
+                    )
+            self._append(f"Tool result\n{str(result)}")
             results.append(
                 ToolMessage(tool_call_id=tool_call["id"], name=tool_call["name"], content=str(result))
             )
@@ -420,13 +417,43 @@ def build_agent(
         openai_api_key=config.model.api_key,
         openai_api_base=config.model.api_base,
     )
-    tool = LocalRAGRetrieveTool(
-        store=load_index(index_dir, keyword_weight=config.retrieval.keyword_weight),
-        min_evidence_score=config.generation.min_evidence_score,
-    )
+    tools = [
+        LocalRAGRetrieveTool(
+            store=load_index(index_dir, keyword_weight=config.retrieval.keyword_weight),
+            min_evidence_score=config.generation.min_evidence_score,
+        )
+    ]
+
+    if config.web.enabled:
+        if config.web.search_provider != "duckduckgo_html":
+            raise ValueError(f"Unsupported web search provider: {config.web.search_provider}")
+
+        backend = MultiQuerySearchBackend(
+            DuckDuckGoHtmlSearchBackend(
+                timeout_seconds=config.web.fetch_timeout_seconds,
+                user_agent=config.web.user_agent,
+            )
+        )
+
+        def fetcher(url: str):
+            return fetch_url(
+                url,
+                timeout_seconds=config.web.fetch_timeout_seconds,
+                max_bytes=config.web.fetch_max_bytes,
+                max_chars=config.web.fetch_max_chars,
+                user_agent=config.web.user_agent,
+            )
+
+        tools.extend(
+            [
+                WebSearchTool(backend=backend, default_top_k=config.web.search_top_k),
+                WebFetchTool(fetcher=fetcher),
+            ]
+        )
+
     return Agent(
         model,
-        [tool],
+        tools,
         checkpointer=checkpointer,
         system=PROMPT,
         ensure_log_file=ensure_log_file,
