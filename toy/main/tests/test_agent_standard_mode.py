@@ -12,6 +12,7 @@ from graph_rag_app.config import (
     ModelConfig,
     RetrievalConfig,
     RuntimeConfig,
+    WebConfig,
 )
 
 
@@ -22,19 +23,17 @@ class AgentStandardModeTests(TestCase):
             model=ModelConfig(api_key="test-key", api_base="https://example.invalid", model_name="model"),
             embedding=EmbeddingConfig(model="embed-model", max_batch_size=8),
             retrieval=RetrievalConfig(keyword_weight=0.25),
+            web=WebConfig(enabled=False),
             generation=GenerationConfig(min_evidence_score=0.15, max_rounds=4),
             runtime=RuntimeConfig(),
         )
 
         with patch("graph_rag_app.agent.ChatOpenAI", return_value="model-instance"):
-            with patch("graph_rag_app.agent.DashScopeEmbeddingClient", return_value="embedding-client"):
-                with patch("graph_rag_app.agent.load_index", return_value="retriever") as load_index:
-                    with patch("graph_rag_app.agent.ensure_index_for_kb") as ensure_index_for_kb:
-                        with patch("graph_rag_app.agent.LocalRAGRetrieveTool", return_value="tool"):
-                            with patch("graph_rag_app.agent.Agent", return_value="agent") as agent_cls:
-                                result = build_agent(index_dir="existing-index", app_config=app_config)
+            with patch("graph_rag_app.agent.load_index", return_value="retriever") as load_index:
+                with patch("graph_rag_app.agent.LocalRAGRetrieveTool", return_value="tool"):
+                    with patch("graph_rag_app.agent.Agent", return_value="agent") as agent_cls:
+                        result = build_agent(index_dir="existing-index", app_config=app_config)
 
         self.assertEqual(result, "agent")
-        ensure_index_for_kb.assert_not_called()
         load_index.assert_called_once_with("existing-index", keyword_weight=0.25)
         agent_cls.assert_called_once()

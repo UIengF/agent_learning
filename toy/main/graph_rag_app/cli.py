@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
 import json
 import os
 
@@ -9,6 +10,7 @@ from .config import (
     DEFAULT_SESSION_ID,
     IndexBuildConfig,
     RetrievalRuntimeConfig,
+    build_app_config,
     parse_bool_env,
 )
 from .indexing import (
@@ -18,6 +20,8 @@ from .indexing import (
     resolve_existing_index_for_kb,
 )
 from .runtime import build_sqlite_checkpointer, run_or_resume
+from .web_fetch import fetch_url
+from .web_search import DuckDuckGoHtmlSearchBackend, MultiQuerySearchBackend
 
 DEFAULT_QUESTION = "What does the knowledge base say about Anthropic agent technology?"
 
@@ -69,6 +73,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     query_run.add_argument("--question", required=True)
     query_run.add_argument("--top-k", type=int, default=None)
     query_run.add_argument("--strategy", choices=["sparse", "dense", "hybrid"], default=None)
+
+    web_parser = subparsers.add_parser("web", help="Run web search and fetch debug commands.")
+    web_subparsers = web_parser.add_subparsers(dest="web_command", required=True)
+
+    web_search = web_subparsers.add_parser("search", help="Search the public web.")
+    web_search.add_argument("--query", required=True)
+    web_search.add_argument("--top-k", type=int, default=None)
+
+    web_fetch = web_subparsers.add_parser("fetch", help="Fetch a public web page.")
+    web_fetch.add_argument("--url", required=True)
 
     ask_parser = subparsers.add_parser(
         "ask",
@@ -132,6 +146,46 @@ def _handle_query_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _build_web_config(args: argparse.Namespace):
+    kb_path = args.kb_path or args.docx_path or "."
+    return build_app_config(kb_path).web
+
+
+def _handle_web_search(args: argparse.Namespace) -> int:
+    web_config = _build_web_config(args)
+    if web_config.search_provider != "duckduckgo_html":
+        raise ValueError(f"Unsupported web search provider: {web_config.search_provider}")
+    backend = MultiQuerySearchBackend(
+        DuckDuckGoHtmlSearchBackend(
+            timeout_seconds=web_config.fetch_timeout_seconds,
+            user_agent=web_config.user_agent,
+        )
+    )
+    top_k = args.top_k if args.top_k is not None else web_config.search_top_k
+    results = backend.search(args.query, top_k=top_k)
+    _print_json(
+        {
+            "query": args.query,
+            "result_count": len(results),
+            "results": [asdict(result) for result in results],
+        }
+    )
+    return 0
+
+
+def _handle_web_fetch(args: argparse.Namespace) -> int:
+    web_config = _build_web_config(args)
+    result = fetch_url(
+        args.url,
+        timeout_seconds=web_config.fetch_timeout_seconds,
+        max_bytes=web_config.fetch_max_bytes,
+        max_chars=web_config.fetch_max_chars,
+        user_agent=web_config.user_agent,
+    )
+    _print_json(asdict(result))
+    return 0
+
+
 def _handle_ask(args: argparse.Namespace) -> int:
     checkpointer = build_sqlite_checkpointer(args.checkpoint_db)
     question = args.question or DEFAULT_QUESTION
@@ -155,6 +209,10 @@ def main(argv: list[str] | None = None) -> int:
         return _handle_index_inspect(args)
     if args.command == "query" and args.query_command == "run":
         return _handle_query_run(args)
+    if args.command == "web" and args.web_command == "search":
+        return _handle_web_search(args)
+    if args.command == "web" and args.web_command == "fetch":
+        return _handle_web_fetch(args)
     if args.command == "ask":
         return _handle_ask(args)
 
