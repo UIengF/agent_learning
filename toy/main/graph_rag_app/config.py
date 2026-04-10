@@ -8,7 +8,7 @@ from pathlib import Path
 DEFAULT_TOP_K = 3
 DEFAULT_KEYWORD_WEIGHT = 0.5
 DEFAULT_SESSION_ID = "graph_rag_default"
-DEFAULT_CHECKPOINT_DB = "checkpoints.db"
+DEFAULT_CHECKPOINT_DB = "runtime/checkpoints.db"
 DEFAULT_MODEL_NAME = "qwen3.6-plus"
 DEFAULT_API_BASE = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 DEFAULT_EMBEDDING_MODEL = "text-embedding-v3"

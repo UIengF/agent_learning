@@ -138,7 +138,7 @@ class Agent:
         max_rounds: int = 3,
     ):
         self.system = system
-        self.log_path = log_path or Path("logs") / "graph_rag.log"
+        self.log_path = log_path or Path("runtime") / "logs" / "graph_rag.log"
         self.model_call_count = 0
         self.tool_call_count = 0
         self.current_round = 0
