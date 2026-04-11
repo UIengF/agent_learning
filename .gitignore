@@ -1,2 +1,12 @@
 checkpoints.db
 __pycache__/
+.worktrees/
+toy/.worktrees/
+toy/__pycache__/
+toy/logs/
+toy/checkpoints.db
+toy/**/*.pyc
+toy/**/__pycache__/
+toy/main/runtime/
+toy/main/agent/*.sqlite3
+toy/main/agent/manifest.json
