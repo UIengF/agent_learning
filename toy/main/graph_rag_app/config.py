@@ -104,6 +104,15 @@ class WebConfig:
 
 
 @dataclass(frozen=True)
+class ScholarConfig:
+    enabled: bool = True
+    api_key: str = ""
+    default_count: int = 5
+    max_count: int = 20
+    engine: str = "google_scholar"
+
+
+@dataclass(frozen=True)
 class ContextConfig:
     max_recent_messages: int = DEFAULT_MAX_RECENT_MESSAGES
     recent_full_turns: int = DEFAULT_RECENT_FULL_TURNS
@@ -141,6 +150,7 @@ class AppConfig:
     web: WebConfig
     generation: GenerationConfig
     runtime: RuntimeConfig
+    scholar: ScholarConfig = field(default_factory=ScholarConfig)
     context: ContextConfig = field(default_factory=ContextConfig)
 
 
@@ -153,6 +163,7 @@ def build_app_config(
     interrupt_after: list[str] | tuple[str, ...] | None = None,
 ) -> AppConfig:
     web_defaults = WebConfig()
+    scholar_defaults = ScholarConfig()
     return AppConfig(
         kb_path=Path(kb_path),
         model=ModelConfig(api_key=os.getenv("DASHSCOPE_API_KEY", "")),
@@ -189,6 +200,31 @@ def build_app_config(
                 web_defaults.fetch_max_chars,
             ),
             user_agent=os.getenv("RAG_WEB_USER_AGENT", web_defaults.user_agent),
+        ),
+        scholar=ScholarConfig(
+            enabled=parse_bool_env("RAG_SCHOLAR_ENABLED", scholar_defaults.enabled),
+            api_key=os.getenv("SERPAPI_API_KEY", scholar_defaults.api_key),
+            default_count=max(
+                1,
+                min(
+                    20,
+                    _parse_int(
+                        os.getenv("RAG_SCHOLAR_DEFAULT_COUNT"),
+                        scholar_defaults.default_count,
+                    ),
+                ),
+            ),
+            max_count=max(
+                1,
+                min(
+                    20,
+                    _parse_int(
+                        os.getenv("RAG_SCHOLAR_MAX_COUNT"),
+                        scholar_defaults.max_count,
+                    ),
+                ),
+            ),
+            engine=os.getenv("RAG_SCHOLAR_ENGINE", scholar_defaults.engine),
         ),
         context=ContextConfig(
             max_recent_messages=_parse_int(

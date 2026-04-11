@@ -25,9 +25,27 @@ from .config import (
     RetrievalConfig,
     RetrievalRuntimeConfig,
     RuntimeConfig,
+    ScholarConfig,
     build_app_config,
     parse_bool_env,
 )
+from .scholar_search import (
+    ScholarSearchResponse,
+    ScholarSearchService,
+    SerpApiGoogleScholarBackend,
+    build_scholar_query_planner,
+    build_scholar_search_service,
+    merge_scholar_hits,
+    parse_scholar_organic_results,
+    plan_scholar_queries,
+    run_scholar_search,
+)
+from .scholar_export import (
+    build_scholar_filename,
+    render_scholar_search_markdown,
+    save_scholar_search_markdown,
+)
+from .scholar_tools import ScholarSearchInput, ScholarSearchTool
 from .token_estimation import HeuristicTokenEstimator, select_token_estimator
 from .indexing import (
     BuildReport,
@@ -60,6 +78,7 @@ from .web_fetch import fetch_url
 from .web_search import DuckDuckGoHtmlSearchBackend
 from .web_tools import WebFetchInput, WebFetchTool, WebSearchInput, WebSearchTool
 from .web_types import FetchResult
+from .web_types import ScholarHit, ScholarResource
 from .runtime import (
     append_log,
     build_sqlite_checkpointer,
@@ -108,7 +127,18 @@ __all__ = [
     "RetrievalConfig",
     "RetrievalRuntimeConfig",
     "RuntimeConfig",
+    "ScholarConfig",
+    "ScholarHit",
+    "ScholarResource",
+    "ScholarSearchInput",
+    "ScholarSearchResponse",
+    "ScholarSearchService",
+    "ScholarSearchTool",
+    "build_scholar_filename",
+    "render_scholar_search_markdown",
+    "save_scholar_search_markdown",
     "SearchResult",
+    "SerpApiGoogleScholarBackend",
     "DuckDuckGoHtmlSearchBackend",
     "WebFetchInput",
     "WebFetchTool",
@@ -136,16 +166,22 @@ __all__ = [
     "load_markdown_directory_text",
     "load_markdown_text",
     "main",
+    "merge_scholar_hits",
     "ndcg_at_k",
     "parse_args",
     "parse_bool_env",
+    "parse_scholar_organic_results",
+    "plan_scholar_queries",
     "reciprocal_rank",
     "resolve_existing_index_for_kb",
     "run_demo",
     "run_graph_invoke",
     "run_graph_stream",
     "run_or_resume",
+    "run_scholar_search",
     "select_token_estimator",
     "shorten_text",
     "tokenize",
+    "build_scholar_query_planner",
+    "build_scholar_search_service",
 ]

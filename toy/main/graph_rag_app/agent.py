@@ -14,7 +14,9 @@ from .context_metrics import format_context_metrics
 from .evidence_cache import build_evidence_cache, format_evidence_cache, lookup_cached_tool_result
 from .indexing import load_index
 from .retrieval import Retriever, normalize_search_result
+from .scholar_search import build_scholar_search_service
 from .session_summary import build_session_summary, format_session_summary
+from .scholar_tools import ScholarSearchTool
 from .task_state import build_task_state, format_task_state
 from .token_estimation import HeuristicTokenEstimator, select_token_estimator
 from .user_memory import UserMemory, format_user_memory, load_user_memory
@@ -69,7 +71,9 @@ You are a research assistant that answers questions using grounded evidence.
 
 Use `local_rag_retrieve` first for information that may already exist in the local knowledge base.
 Use `web_search` only for recent public information or when local evidence is missing.
+Use `scholar_search` for requests about papers, literature reviews, citations, related work, or academic surveys.
 Do not answer detailed factual questions from search snippets alone. If a snippet suggests the needed evidence is on a page, call `web_fetch` before relying on it.
+Scholar results can be used directly as grounded paper metadata without fetching the paper page first.
 
 Do not invent facts that are not supported by tool results. If evidence is incomplete, say what is missing.
 If results contain multiple plausible answers, dates, or scenarios, call that out clearly before answering.
@@ -742,9 +746,16 @@ def build_agent(
         tools.extend(
             [
                 WebSearchTool(backend=backend, default_top_k=config.web.search_top_k),
-                WebFetchTool(fetcher=fetcher),
             ]
         )
+        if config.scholar.enabled:
+            tools.append(
+                ScholarSearchTool(
+                    searcher=build_scholar_search_service(config),
+                    default_count=config.scholar.default_count,
+                )
+            )
+        tools.append(WebFetchTool(fetcher=fetcher))
 
     return Agent(
         model,

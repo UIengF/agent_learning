@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict
+from datetime import datetime
 import json
 import os
 
@@ -20,10 +21,22 @@ from .indexing import (
     resolve_existing_index_for_kb,
 )
 from .runtime import build_sqlite_checkpointer, run_or_resume
+from .scholar_export import save_scholar_search_markdown
+from .scholar_search import run_scholar_search
 from .web_fetch import fetch_url
 from .web_search import DuckDuckGoHtmlSearchBackend, MultiQuerySearchBackend
 
 DEFAULT_QUESTION = "What does the knowledge base say about Anthropic agent technology?"
+
+
+def _bounded_int(minimum: int, maximum: int):
+    def parser(value: str) -> int:
+        parsed = int(value)
+        if parsed < minimum or parsed > maximum:
+            raise argparse.ArgumentTypeError(f"Expected an integer between {minimum} and {maximum}.")
+        return parsed
+
+    return parser
 
 
 def _add_runtime_args(parser: argparse.ArgumentParser, *, include_index_dir: bool) -> None:
@@ -83,6 +96,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     web_fetch = web_subparsers.add_parser("fetch", help="Fetch a public web page.")
     web_fetch.add_argument("--url", required=True)
+
+    scholar_parser = subparsers.add_parser("scholar", help="Run Google Scholar search commands.")
+    scholar_subparsers = scholar_parser.add_subparsers(dest="scholar_command", required=True)
+    scholar_search = scholar_subparsers.add_parser("search", help="Search Google Scholar from a topic.")
+    scholar_search.add_argument("--topic", required=True)
+    scholar_search.add_argument("--count", type=_bounded_int(1, 20), default=5)
+    scholar_search.add_argument("--save-md", action="store_true", default=False)
+    scholar_search.add_argument("--output-dir", default="agent/scholar")
 
     ask_parser = subparsers.add_parser(
         "ask",
@@ -186,6 +207,25 @@ def _handle_web_fetch(args: argparse.Namespace) -> int:
     return 0
 
 
+def _handle_scholar_search(args: argparse.Namespace) -> int:
+    app_config = build_app_config(args.kb_path or args.docx_path or ".")
+    result = run_scholar_search(
+        topic=args.topic,
+        count=args.count,
+        app_config=app_config,
+    )
+    _print_json(asdict(result))
+    if args.save_md:
+        output_path = save_scholar_search_markdown(
+            result,
+            output_dir=args.output_dir,
+            count_requested=args.count,
+            now=datetime.now().astimezone(),
+        )
+        print(f"Saved Markdown to {output_path}")
+    return 0
+
+
 def _handle_ask(args: argparse.Namespace) -> int:
     checkpointer = build_sqlite_checkpointer(args.checkpoint_db)
     question = args.question or DEFAULT_QUESTION
@@ -213,6 +253,8 @@ def main(argv: list[str] | None = None) -> int:
         return _handle_web_search(args)
     if args.command == "web" and args.web_command == "fetch":
         return _handle_web_fetch(args)
+    if args.command == "scholar" and args.scholar_command == "search":
+        return _handle_scholar_search(args)
     if args.command == "ask":
         return _handle_ask(args)
 

@@ -13,6 +13,7 @@ from graph_rag_app.config import (
     ModelConfig,
     RetrievalConfig,
     RuntimeConfig,
+    ScholarConfig,
     WebConfig,
 )
 from graph_rag_app.web_search import MultiQuerySearchBackend
@@ -41,6 +42,7 @@ class AgentWebIntegrationTests(TestCase):
                 fetch_max_chars=512,
                 user_agent="agent-test/1.0",
             ),
+            scholar=ScholarConfig(enabled=True, api_key="serp-api-key", default_count=4, max_count=20),
             generation=GenerationConfig(min_evidence_score=0.15, max_rounds=4),
             runtime=RuntimeConfig(),
         )
@@ -68,30 +70,38 @@ class AgentWebIntegrationTests(TestCase):
                                 side_effect=build_web_fetch_tool,
                             ) as web_fetch_tool:
                                 with patch(
-                                    "graph_rag_app.agent.fetch_url",
-                                    return_value=FetchResult(
-                                        url="https://example.com/page",
-                                        final_url="https://example.com/page",
-                                        title="Fetched page",
-                                        text="Expanded page content.",
-                                        status_code=200,
-                                        content_type="text/html",
-                                        truncated=False,
-                                    ),
-                                ) as fetch_url:
+                                    "graph_rag_app.agent.build_scholar_search_service",
+                                    return_value="scholar-service",
+                                ) as build_scholar_service:
                                     with patch(
-                                        "graph_rag_app.agent.Agent",
-                                        return_value="agent",
-                                    ) as agent_cls:
-                                        result = build_agent(
-                                            index_dir="existing-index",
-                                            app_config=app_config,
-                                        )
-                                        self.assertIsNotNone(captured_fetcher)
-                                        self.assertEqual(
-                                            captured_fetcher("https://example.com/page").title,
-                                            "Fetched page",
-                                        )
+                                        "graph_rag_app.agent.ScholarSearchTool",
+                                        return_value="scholar-search-tool",
+                                    ) as scholar_tool:
+                                        with patch(
+                                            "graph_rag_app.agent.fetch_url",
+                                            return_value=FetchResult(
+                                                url="https://example.com/page",
+                                                final_url="https://example.com/page",
+                                                title="Fetched page",
+                                                text="Expanded page content.",
+                                                status_code=200,
+                                                content_type="text/html",
+                                                truncated=False,
+                                            ),
+                                        ) as fetch_url:
+                                            with patch(
+                                                "graph_rag_app.agent.Agent",
+                                                return_value="agent",
+                                            ) as agent_cls:
+                                                result = build_agent(
+                                                    index_dir="existing-index",
+                                                    app_config=app_config,
+                                                )
+                                                self.assertIsNotNone(captured_fetcher)
+                                                self.assertEqual(
+                                                    captured_fetcher("https://example.com/page").title,
+                                                    "Fetched page",
+                                                )
 
         self.assertEqual(result, "agent")
         load_index.assert_called_once_with("existing-index", keyword_weight=0.25)
@@ -102,6 +112,8 @@ class AgentWebIntegrationTests(TestCase):
         self.assertIsInstance(wrapped_backend, MultiQuerySearchBackend)
         self.assertEqual(wrapped_backend.backend, "search-backend")
         self.assertEqual(web_search_tool.call_args.kwargs["default_top_k"], 7)
+        build_scholar_service.assert_called_once_with(app_config)
+        scholar_tool.assert_called_once_with(searcher="scholar-service", default_count=4)
         web_fetch_tool.assert_called_once()
         fetch_url.assert_called_once_with(
             "https://example.com/page",
@@ -112,7 +124,7 @@ class AgentWebIntegrationTests(TestCase):
         )
         agent_cls.assert_called_once_with(
             "model-instance",
-            ["local-tool", "web-search-tool", "web-fetch-tool"],
+            ["local-tool", "web-search-tool", "scholar-search-tool", "web-fetch-tool"],
             checkpointer=None,
             system=agent_cls.call_args.kwargs["system"],
             ensure_log_file=None,

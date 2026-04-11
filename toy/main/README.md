@@ -50,6 +50,12 @@ Run the agent with local retrieval and web fallback:
 python graph_rag.py ask --index-dir .\agent --question "What changed recently about OpenAI agents?"
 ```
 
+Run Google Scholar search and export the results to Markdown:
+
+```powershell
+python graph_rag.py scholar search --topic "graph rag" --count 5 --save-md
+```
+
 Run tests:
 
 ```powershell

@@ -20,6 +20,31 @@ class WebConfigTests(TestCase):
         self.assertEqual(config.web.fetch_max_chars, 6000)
         self.assertIn("Mozilla/5.0", config.web.user_agent)
         self.assertIn("graph-rag-agent/1.0", config.web.user_agent)
+        self.assertTrue(config.scholar.enabled)
+        self.assertEqual(config.scholar.api_key, "")
+        self.assertEqual(config.scholar.default_count, 5)
+        self.assertEqual(config.scholar.max_count, 20)
+        self.assertEqual(config.scholar.engine, "google_scholar")
+
+    def test_build_app_config_reads_scholar_env(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "RAG_SCHOLAR_ENABLED": "false",
+                "SERPAPI_API_KEY": "serp-key",
+                "RAG_SCHOLAR_DEFAULT_COUNT": "7",
+                "RAG_SCHOLAR_MAX_COUNT": "12",
+                "RAG_SCHOLAR_ENGINE": "google_scholar",
+            },
+            clear=True,
+        ):
+            config = build_app_config("index-dir")
+
+        self.assertFalse(config.scholar.enabled)
+        self.assertEqual(config.scholar.api_key, "serp-key")
+        self.assertEqual(config.scholar.default_count, 7)
+        self.assertEqual(config.scholar.max_count, 12)
+        self.assertEqual(config.scholar.engine, "google_scholar")
 
     def test_build_app_config_includes_context_defaults_and_env(self) -> None:
         with patch.dict(

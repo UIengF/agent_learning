@@ -14,6 +14,27 @@ class SearchHit:
 
 
 @dataclass(frozen=True)
+class ScholarResource:
+    title: str
+    link: str
+    file_format: str | None = None
+
+
+@dataclass(frozen=True)
+class ScholarHit:
+    title: str
+    url: str
+    snippet: str
+    publication_summary: str
+    year: int | None
+    cited_by_count: int
+    resources: tuple[ScholarResource, ...]
+    source_query: str
+    rank: int
+    source: str = "google_scholar_serpapi"
+
+
+@dataclass(frozen=True)
 class FetchResult:
     url: str
     final_url: str
