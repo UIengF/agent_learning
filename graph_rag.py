@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import argparse
 import math
 import os
 import re
+import sqlite3
 import zipfile
 import hashlib
 import json
@@ -22,6 +24,7 @@ try:
     from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage, ToolMessage
     from langchain_core.tools import BaseTool
     from langchain_openai import ChatOpenAI
+    from langgraph.checkpoint.sqlite import SqliteSaver
     from langgraph.graph import END, StateGraph
 
     LANGGRAPH_AVAILABLE = True
@@ -32,6 +35,7 @@ except ImportError:  # pragma: no cover - keep helper tests importable without f
     ToolMessage = None
     BaseTool = object  # type: ignore[assignment]
     ChatOpenAI = None
+    SqliteSaver = None
     StateGraph = None
     END = None
     Annotated = list  # type: ignore[assignment]
@@ -49,6 +53,21 @@ else:
 
 DEFAULT_TOP_K = 3
 DEFAULT_KEYWORD_WEIGHT = 0.5
+DEFAULT_SESSION_ID = "graph_rag_default"
+DEFAULT_CHECKPOINT_DB = "checkpoints.db"
+
+
+def build_sqlite_checkpointer(db_path: str | Path) -> Any | None:
+    if SqliteSaver is None:
+        return None
+
+    path = Path(db_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(path.resolve(), check_same_thread=False)
+    checkpointer = SqliteSaver(connection)
+    # Keep a strong reference so the sqlite connection is not garbage-collected.
+    setattr(checkpointer, "_connection", connection)
+    return checkpointer
 
 
 def ensure_log_file(log_path: Path) -> None:
@@ -60,6 +79,13 @@ def ensure_log_file(log_path: Path) -> None:
 def append_log(log_path: Path, text: str) -> None:
     with log_path.open("a", encoding="utf-8") as file:
         file.write(text.rstrip() + "\n\n")
+
+
+def parse_bool_env(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def shorten_text(text: str, max_len: int = 600) -> str:
@@ -448,7 +474,7 @@ class LocalRAGRetrieveTool(BaseTool):
 
 
 class Agent:
-    def __init__(self, model=None, tools=None, system: str = ""):
+    def __init__(self, model=None, tools=None, checkpointer: Any | None = None, system: str = ""):
         self.system = system
         self.log_path = Path("logs") / "graph_rag.log"
         self.model_call_count = 0
@@ -465,7 +491,11 @@ class Agent:
             graph.add_conditional_edges("llm", self.exists_action, {True: "action", False: END})
             graph.add_edge("action", "llm")
             graph.set_entry_point("llm")
-            self.graph = graph.compile()
+            try:
+                self.graph = graph.compile(checkpointer=checkpointer)
+            except TypeError:
+                # Compatibility fallback for lightweight graph stubs used in tests.
+                self.graph = graph.compile()
             self.model = model.bind_tools(tools)
         else:
             self.model = None
@@ -619,7 +649,7 @@ PROMPT = """\
 """
 
 
-def build_agent(docx_path: str | Path) -> Agent:
+def build_agent(docx_path: str | Path, checkpointer: Any | None = None) -> Agent:
     if ChatOpenAI is None:
         raise ImportError("Missing runtime dependencies for LangGraph execution.")
 
@@ -656,37 +686,208 @@ def build_agent(docx_path: str | Path) -> Agent:
         keyword_weight=keyword_weight,
     )
     tool = LocalRAGRetrieveTool(store=store)
-    return Agent(model, [tool], system=PROMPT)
+    return Agent(model, [tool], checkpointer=checkpointer, system=PROMPT)
 
 
-def run_demo(question: str, docx_path: str | Path) -> str:
+def get_thread_config(session_id: str) -> dict[str, dict[str, str]]:
+    return {"configurable": {"thread_id": session_id}}
+
+
+def get_graph_state(graph: Any, config: dict[str, Any]) -> Any | None:
+    getter = getattr(graph, "get_state", None)
+    if getter is None:
+        return None
+    return getter(config)
+
+
+def run_graph_invoke(graph: Any, state: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return graph.invoke(state, config=config)
+    except TypeError as exc:
+        if "config" not in str(exc):
+            raise
+        return graph.invoke(state)
+
+
+def run_graph_stream(
+    graph: Any,
+    state: dict[str, Any] | None,
+    config: dict[str, Any],
+    interrupt_after: list[str] | None = None,
+) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {"config": config}
+    if interrupt_after:
+        kwargs["interrupt_after"] = interrupt_after
+
+    try:
+        events = graph.stream(state, **kwargs)
+    except TypeError as exc:
+        if "config" in str(exc) or "interrupt_after" in str(exc):
+            if interrupt_after:
+                raise RuntimeError(
+                    "This LangGraph runtime does not support interrupt_after for streamed resume."
+                ) from exc
+            events = graph.stream(state)
+        else:
+            raise
+
+    last_event: dict[str, Any] | None = None
+    for event in events:
+        last_event = event
+
+    if last_event is None:
+        raise RuntimeError("Graph stream completed without emitting any events.")
+    return last_event
+
+
+def extract_messages_from_result(result: dict[str, Any] | None) -> list[Any]:
+    if not result:
+        return []
+    messages = result.get("messages", [])
+    return messages if isinstance(messages, list) else []
+
+
+def extract_final_answer(
+    result: dict[str, Any] | None,
+    state: Any | None,
+    message_content: Any,
+) -> str | None:
+    messages = extract_messages_from_result(result)
+    if not messages and state is not None:
+        state_values = getattr(state, "values", None)
+        if isinstance(state_values, dict):
+            messages = state_values.get("messages", []) or []
+    if not messages:
+        return None
+    return message_content(messages[-1])
+
+
+def run_or_resume(
+    question: str,
+    docx_path: str | Path,
+    session_id: str = DEFAULT_SESSION_ID,
+    checkpointer: Any | None = None,
+    resume: bool = False,
+    interrupt_after: list[str] | None = None,
+) -> str:
     if HumanMessage is None:
         raise ImportError("Missing runtime dependencies for LangGraph execution.")
 
-    agent = build_agent(docx_path)
-    messages = [HumanMessage(content=question)]
+    agent = build_agent(docx_path, checkpointer=checkpointer)
     ensure_log_file(agent.log_path)
-    agent.log_path.write_text("", encoding="utf-8")
-    append_log(
-        agent.log_path,
-        "===== 会话开始 =====\n"
-        f"文档路径:\n{Path(docx_path).resolve()}\n\n"
-        f"用户问题:\n{question}\n\n"
-        f"系统提示:\n{agent.system}",
+    config = get_thread_config(session_id)
+    state = get_graph_state(agent.graph, config)
+    next_nodes = tuple(getattr(state, "next", ()) or ())
+
+    if resume:
+        if not next_nodes:
+            raise RuntimeError(f"No resumable checkpoint found for session '{session_id}'.")
+        append_log(
+            agent.log_path,
+            "===== 恢复会话 =====\n"
+            f"session_id: {session_id}\n"
+            f"待继续节点: {', '.join(next_nodes)}",
+        )
+        result = run_graph_stream(
+            agent.graph,
+            None,
+            config=config,
+            interrupt_after=interrupt_after,
+        )
+    else:
+        append_log(
+            agent.log_path,
+            "===== 会话开始 =====\n"
+            f"session_id: {session_id}\n"
+            f"文档路径:\n{Path(docx_path).resolve()}\n\n"
+            f"用户问题:\n{question}\n\n"
+            f"系统提示:\n{agent.system}",
+        )
+        initial_state = {"messages": [HumanMessage(content=question)]}
+        if interrupt_after:
+            result = run_graph_stream(
+                agent.graph,
+                initial_state,
+                config=config,
+                interrupt_after=interrupt_after,
+            )
+        else:
+            result = run_graph_invoke(agent.graph, initial_state, config=config)
+
+    post_state = get_graph_state(agent.graph, config)
+    post_next_nodes = tuple(getattr(post_state, "next", ()) or ())
+    final_answer = extract_final_answer(result, post_state, agent._message_content)
+    if post_next_nodes:
+        append_log(
+            agent.log_path,
+            "===== 已保存断点 =====\n"
+            f"session_id: {session_id}\n"
+            f"待继续节点: {', '.join(post_next_nodes)}\n"
+            "验证方式: 使用相同 session_id 调用恢复入口。",
+        )
+        return final_answer or f"[checkpoint saved] resume with session_id={session_id}"
+
+    if final_answer is None:
+        raise RuntimeError("Graph execution completed without any messages.")
+
+    else:
+        append_log(agent.log_path, f"===== 最终答案 =====\n{final_answer}")
+    return final_answer
+
+
+def run_demo(
+    question: str,
+    docx_path: str | Path,
+    thread_id: str = DEFAULT_SESSION_ID,
+    checkpointer: Any | None = None,
+) -> str:
+    return run_or_resume(
+        question=question,
+        docx_path=docx_path,
+        session_id=thread_id,
+        checkpointer=checkpointer,
+        resume=False,
     )
-    result = agent.graph.invoke({"messages": messages})
-    append_log(
-        agent.log_path,
-        "===== 最终答案 =====\n"
-        f"{agent._message_content(result['messages'][-1])}",
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run or resume the graph_rag LangGraph agent.")
+    parser.add_argument("--question", default=os.getenv("RAG_QUESTION", ""))
+    parser.add_argument("--docx-path", default=os.getenv("RAG_DOCX_PATH", ""))
+    parser.add_argument("--session-id", default=os.getenv("RAG_SESSION_ID", DEFAULT_SESSION_ID))
+    parser.add_argument(
+        "--checkpoint-db",
+        default=os.getenv("RAG_CHECKPOINT_DB", DEFAULT_CHECKPOINT_DB),
     )
-    return result["messages"][-1].content
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        default=parse_bool_env("RAG_RESUME", False),
+        help="Resume from an existing checkpoint for the same session id.",
+    )
+    parser.add_argument(
+        "--interrupt-after",
+        action="append",
+        default=None,
+        help="Interrupt after the given node name. Repeatable.",
+    )
+    return parser.parse_args()
 
 
 if __name__ == "__main__":
-    docx_path = os.getenv("RAG_DOCX_PATH", "")
+    args = parse_args()
+    docx_path = args.docx_path
     if not docx_path:
         raise EnvironmentError("Missing RAG_DOCX_PATH environment variable.")
 
-    answer = run_demo("林晓的数学和语文成绩分别变化了多少？", docx_path)
+    checkpointer = build_sqlite_checkpointer(args.checkpoint_db)
+    question = args.question or "林晓的数学和语文成绩分别变化了多少？"
+    answer = run_or_resume(
+        question=question,
+        docx_path=docx_path,
+        session_id=args.session_id,
+        checkpointer=checkpointer,
+        resume=args.resume,
+        interrupt_after=args.interrupt_after,
+    )
     print(answer)
