@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent 资料助手</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <main class="app-shell">
+    <section class="question-pane" aria-labelledby="app-title">
+      <p class="eyebrow">Agent Research</p>
+      <h1 id="app-title">Agent 资料助手</h1>
+      <p class="intro">围绕本地 Agent 资料提问，必要时自动补充网页和论文线索。</p>
+
+      <form id="ask-form" class="ask-form">
+        <label for="question">你想了解什么？</label>
+        <textarea id="question" name="question" rows="8" required placeholder="例如：这些资料里对 Agent 工程化有哪些共识？"></textarea>
+
+        <div class="field-grid">
+          <div class="field">
+            <label for="index-dir">资料索引</label>
+            <input id="index-dir" name="index_dir" value="agent" autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="session-id">会话名称</label>
+            <input id="session-id" name="session_id" value="graph_rag_default" autocomplete="off">
+          </div>
+        </div>
+
+        <label class="checkbox-row">
+          <input id="resume" name="resume" type="checkbox">
+          <span>接着上次的上下文继续</span>
+        </label>
+
+        <button id="submit-button" type="submit">开始回答</button>
+      </form>
+    </section>
+
+    <section class="answer-pane" aria-live="polite">
+      <div class="status-bar">
+        <div>
+          <p class="eyebrow">Progress</p>
+          <p id="status-text">准备就绪</p>
+        </div>
+        <button id="clear-button" type="button">清空</button>
+      </div>
+
+      <div id="history" class="history">
+        <article class="empty-state">
+          <h2>先提一个问题</h2>
+          <p>回答会显示在这里，并保留本页最近几轮记录。</p>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

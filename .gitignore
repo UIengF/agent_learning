@@ -10,3 +10,9 @@ toy/**/__pycache__/
 toy/main/runtime/
 toy/main/agent/*.sqlite3
 toy/main/agent/manifest.json
+agent_rag/runtime/
+agent_rag/agent/*.sqlite3
+agent_rag/agent/manifest.json
+agent_rag/**/__pycache__/
+agent_rag/**/*.pyc
+agent_rag/.learnings/
