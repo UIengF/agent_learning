@@ -261,7 +261,7 @@ class LocalRAGStore:
         self.text = load_corpus_text(self.kb_path)
         self.chunks = chunk_text(self.text, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
         if not self.chunks:
-            raise ValueError("文档中未提取到可检索内容。")
+            raise ValueError("鏂囨。涓湭鎻愬彇鍒板彲妫€绱㈠唴瀹广€?")
 
         self.chunk_token_counts = [Counter(tokenize(chunk)) for chunk in self.chunks]
         self.chunk_lengths = [sum(counter.values()) for counter in self.chunk_token_counts]

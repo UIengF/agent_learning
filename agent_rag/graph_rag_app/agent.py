@@ -13,6 +13,7 @@ from .context_builder import ContextBuildResult, build_context_messages
 from .context_metrics import format_context_metrics
 from .evidence_cache import build_evidence_cache, format_evidence_cache, lookup_cached_tool_result
 from .indexing import load_index
+from .question_frame import QuestionFrame, build_question_frame, format_question_frame
 from .retrieval import Retriever, normalize_search_result
 from .scholar_search import build_scholar_search_service
 from .session_summary import build_session_summary, format_session_summary
@@ -21,7 +22,7 @@ from .task_state import build_task_state, format_task_state
 from .token_estimation import HeuristicTokenEstimator, select_token_estimator
 from .user_memory import UserMemory, format_user_memory, load_user_memory
 from .web_fetch import fetch_url
-from .web_search import DuckDuckGoHtmlSearchBackend, MultiQuerySearchBackend
+from .web_runtime import build_configured_web_search_backend
 from .web_tools import WebFetchTool, WebSearchTool
 
 try:
@@ -136,6 +137,32 @@ class LocalRAGRetrieveTool(BaseTool):
         return json.dumps(payload, ensure_ascii=False)
 
 
+@dataclass(frozen=True)
+class ReflectionRecord:
+    stage: str
+    question: str
+    entities: tuple[str, ...]
+    evidence_sufficiency: str
+    missing_information: tuple[str, ...]
+    recommended_next_action: str
+    latest_tool_name: str
+    latest_tool_result_count: int | None
+    cached_web_queries: tuple[str, ...]
+    cached_fetched_urls: tuple[str, ...]
+    llm_decision: str
+    tool_calls: tuple[dict[str, Any], ...]
+
+
+@dataclass(frozen=True)
+class LoggedQuestionFrame:
+    question: str
+    target_entities: tuple[str, ...]
+    task_intent: str
+    focus_dimensions: tuple[str, ...]
+    evidence_scope: dict[str, bool]
+    success_criteria: tuple[str, ...]
+
+
 class Agent:
     def __init__(
         self,
@@ -230,6 +257,9 @@ class Agent:
     def _append(self, text: str) -> None:
         if self._append_log is not None:
             self._append_log(self.log_path, text)
+
+    def _append_json(self, title: str, payload: dict[str, Any]) -> None:
+        self._append(f"{title}\n{json.dumps(payload, ensure_ascii=False, sort_keys=True)}")
 
     def _shorten(self, text: str, max_len: int) -> str:
         if self._shorten_text is None:
@@ -353,6 +383,33 @@ class Agent:
             is_human_message=self._is_human_message,
             tool_name=self._tool_name,
         )
+
+    def _extract_question_text(self, messages: list[AnyMessage | dict]) -> str:
+        for message in reversed(messages):
+            if self._is_human_message(message):
+                content = self._message_content(message).strip()
+                if content:
+                    return content
+        return ""
+
+    def _build_question_frame(self, messages: list[AnyMessage | dict]) -> QuestionFrame | None:
+        question = self._extract_question_text(messages)
+        if question:
+            return build_question_frame(question)
+        return None
+
+    def _log_question_frame(self, question_frame: QuestionFrame | None) -> None:
+        if question_frame is None:
+            return
+        payload = LoggedQuestionFrame(
+            question=question_frame.question,
+            target_entities=question_frame.target_entities,
+            task_intent=question_frame.task_intent,
+            focus_dimensions=question_frame.focus_dimensions,
+            evidence_scope=asdict(question_frame.evidence_scope),
+            success_criteria=question_frame.success_criteria,
+        )
+        self._append_json("Question frame", asdict(payload))
 
     def _build_evidence_cache(self, messages: list[AnyMessage | dict]):
         return build_evidence_cache(
@@ -506,6 +563,66 @@ class Agent:
             return urls
         return []
 
+    def _latest_tool_snapshot(self, state: AgentState) -> tuple[str, dict[str, Any]]:
+        for message in reversed(self._current_call_messages(state)):
+            if not self._is_tool_message(message):
+                continue
+            return self._tool_name(message), self._parse_tool_payload(self._message_content(message))
+        return "", {}
+
+    def _build_reflection_record(
+        self,
+        state: AgentState,
+        *,
+        llm_decision: str,
+        tool_calls: list[dict[str, Any]] | None = None,
+    ) -> ReflectionRecord | None:
+        task_state = self._build_task_state(list(state["messages"]))
+        if task_state is None:
+            return None
+        evidence_cache = self._build_evidence_cache(list(state["messages"]))
+        latest_tool_name, latest_tool_payload = self._latest_tool_snapshot(state)
+        latest_tool_result_count = latest_tool_payload.get("result_count")
+        if not isinstance(latest_tool_result_count, int):
+            latest_tool_result_count = None
+        serialized_calls = tuple(
+            {
+                "name": str(tool_call.get("name", "")),
+                "args": dict(tool_call.get("args", {})),
+            }
+            for tool_call in (tool_calls or [])
+        )
+        return ReflectionRecord(
+            stage="post_tool_reflection",
+            question=task_state.question,
+            entities=task_state.entities,
+            evidence_sufficiency=task_state.evidence_sufficiency,
+            missing_information=task_state.missing_information,
+            recommended_next_action=task_state.next_action,
+            latest_tool_name=latest_tool_name,
+            latest_tool_result_count=latest_tool_result_count,
+            cached_web_queries=tuple(sorted(evidence_cache.web_results_by_query.keys())),
+            cached_fetched_urls=tuple(sorted(evidence_cache.fetched_pages_by_url.keys())),
+            llm_decision=llm_decision,
+            tool_calls=serialized_calls,
+        )
+
+    def _log_reflection_record(
+        self,
+        state: AgentState,
+        *,
+        llm_decision: str,
+        tool_calls: list[dict[str, Any]] | None = None,
+    ) -> None:
+        record = self._build_reflection_record(
+            state,
+            llm_decision=llm_decision,
+            tool_calls=tool_calls,
+        )
+        if record is None:
+            return
+        self._append_json("Reflection result", asdict(record))
+
     def _apply_official_first_fetch_policy(
         self,
         state: AgentState,
@@ -569,6 +686,7 @@ class Agent:
     def build_context_result(self, state: AgentState) -> ContextBuildResult:
         trimmed_messages, base_messages = self._select_recent_turns(list(state["messages"]))
         evidence_cache = self._build_evidence_cache(list(state["messages"]))
+        question_frame = self._build_question_frame(list(state["messages"]))
         tool_results = []
         for message in reversed(base_messages):
             if self._is_tool_message(message):
@@ -590,6 +708,9 @@ class Agent:
             shorten=self._shorten,
             max_chars=self.max_context_chars,
         )
+        question_frame_text = None
+        if question_frame is not None:
+            question_frame_text = format_question_frame(question_frame)
 
         evidence_cache_text = format_evidence_cache(evidence_cache)
 
@@ -610,6 +731,7 @@ class Agent:
             base_messages=base_messages,
             system_text=self.system,
             summary_text=summary_text,
+            question_frame_text=question_frame_text,
             user_memory_text=user_memory_text,
             evidence_cache_text=evidence_cache_text,
             task_state_text=task_state_text,
@@ -653,6 +775,7 @@ class Agent:
         if self.model_call_count == 1:
             self.current_round = 1
             self.log_round_header("Start analyzing the user question")
+            self._log_question_frame(self._build_question_frame(list(state["messages"])))
 
         if context_result.metrics is not None:
             self._append(format_context_metrics(context_result.metrics))
@@ -663,6 +786,11 @@ class Agent:
         completed_rounds = self._tool_rounds_in_current_call(state)
         if tool_calls and completed_rounds >= self.max_rounds:
             limited_content = self._tool_limit_message_text()
+            self._log_reflection_record(
+                state,
+                llm_decision="final_after_tool_limit",
+                tool_calls=tool_calls,
+            )
             self._append(
                 "LLM decision: stop calling tools because the limit was reached.\n"
                 f"Completed rounds: {completed_rounds}\n"
@@ -683,6 +811,7 @@ class Agent:
             message, tool_calls = self._apply_official_first_fetch_policy(state, message, tool_calls)
 
         if tool_calls:
+            self._log_reflection_record(state, llm_decision="tool_use", tool_calls=tool_calls)
             first_query = tool_calls[0].get("args", {}).get("query", "")
             self._append(
                 "LLM decision: continue with tool use.\n"
@@ -690,6 +819,7 @@ class Agent:
                 f"Primary query:\n{first_query}"
             )
         else:
+            self._log_reflection_record(state, llm_decision="answer", tool_calls=[])
             self._append(
                 "LLM decision: answer directly.\n"
                 f"Output summary:\n{self._shorten(response_text, 800)}"
@@ -773,15 +903,7 @@ def build_agent(
     ]
 
     if config.web.enabled:
-        if config.web.search_provider != "duckduckgo_html":
-            raise ValueError(f"Unsupported web search provider: {config.web.search_provider}")
-
-        backend = MultiQuerySearchBackend(
-            DuckDuckGoHtmlSearchBackend(
-                timeout_seconds=config.web.fetch_timeout_seconds,
-                user_agent=config.web.user_agent,
-            )
-        )
+        backend = build_configured_web_search_backend(config.web)
 
         def fetcher(url: str):
             return fetch_url(

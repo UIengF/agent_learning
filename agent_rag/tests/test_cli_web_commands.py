@@ -66,8 +66,8 @@ class CliWebCommandTests(TestCase):
                 build_app_config.return_value.web.search_top_k = 5
                 build_app_config.return_value.web.fetch_timeout_seconds = 15
                 build_app_config.return_value.web.user_agent = "graph-rag-agent/1.0"
-                with patch("graph_rag_app.cli.DuckDuckGoHtmlSearchBackend") as backend_cls:
-                    backend = backend_cls.return_value
+                with patch("graph_rag_app.cli.build_configured_web_search_backend") as backend_builder:
+                    backend = backend_builder.return_value
                     backend.search.return_value = [
                         SearchHit(
                             title="result",
@@ -83,10 +83,7 @@ class CliWebCommandTests(TestCase):
         self.assertEqual(exit_code, 0)
         print_json.assert_called_once()
         build_app_config.assert_called_once()
-        backend_cls.assert_called_once_with(
-            timeout_seconds=15,
-            user_agent="graph-rag-agent/1.0",
-        )
+        backend_builder.assert_called_once_with(build_app_config.return_value.web)
         backend.search.assert_called_once_with("agent updates", top_k=2)
 
     def test_main_dispatches_web_fetch_through_expected_fetch_path(self) -> None:

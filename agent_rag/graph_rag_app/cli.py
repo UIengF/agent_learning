@@ -24,8 +24,8 @@ from .runtime import build_sqlite_checkpointer, run_or_resume
 from .scholar_export import save_scholar_search_markdown
 from .scholar_search import run_scholar_search
 from .web_fetch import fetch_url
-from .web_search import DuckDuckGoHtmlSearchBackend, MultiQuerySearchBackend
-from .web_ui import serve_ui
+from .web_runtime import build_configured_web_search_backend
+from .server import serve_fastapi
 
 DEFAULT_QUESTION = "What does the knowledge base say about Anthropic agent technology?"
 
@@ -117,6 +117,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ui_parser.add_argument("--host", default="127.0.0.1")
     ui_parser.add_argument("--port", type=int, default=8765)
 
+    serve_parser = subparsers.add_parser("serve", help="Run the FastAPI backend service.")
+    serve_parser.add_argument("--index-dir", default="agent")
+    serve_parser.add_argument("--host", default="127.0.0.1")
+    serve_parser.add_argument("--port", type=int, default=8765)
+    serve_parser.add_argument("--reload", action="store_true", default=False)
+
     _add_runtime_args(parser, include_index_dir=False)
     parser.add_argument(
         "--kb-path",
@@ -180,14 +186,7 @@ def _build_web_config(args: argparse.Namespace):
 
 def _handle_web_search(args: argparse.Namespace) -> int:
     web_config = _build_web_config(args)
-    if web_config.search_provider != "duckduckgo_html":
-        raise ValueError(f"Unsupported web search provider: {web_config.search_provider}")
-    backend = MultiQuerySearchBackend(
-        DuckDuckGoHtmlSearchBackend(
-            timeout_seconds=web_config.fetch_timeout_seconds,
-            user_agent=web_config.user_agent,
-        )
-    )
+    backend = build_configured_web_search_backend(web_config)
     top_k = args.top_k if args.top_k is not None else web_config.search_top_k
     results = backend.search(args.query, top_k=top_k)
     _print_json(
@@ -264,7 +263,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "ask":
         return _handle_ask(args)
     if args.command == "ui":
-        return serve_ui(index_dir=args.index_dir, host=args.host, port=args.port)
+        return serve_fastapi(index_dir=args.index_dir, host=args.host, port=args.port, reload=False)
+    if args.command == "serve":
+        return serve_fastapi(
+            index_dir=args.index_dir,
+            host=args.host,
+            port=args.port,
+            reload=args.reload,
+        )
 
     kb_path = args.kb_path or args.docx_path
     if not kb_path:

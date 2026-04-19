@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from unittest import TestCase
 
@@ -76,4 +76,3 @@ class RetrievalRerankTests(TestCase):
 
         self.assertEqual(reranked[0].chunk_id, 2)
         self.assertGreater(reranked[0].score, reranked[1].score)
-

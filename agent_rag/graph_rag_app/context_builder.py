@@ -368,6 +368,7 @@ def build_context_messages(
     base_messages: list[Any],
     system_text: str | None,
     summary_text: str | None,
+    question_frame_text: str | None,
     user_memory_text: str | None,
     evidence_cache_text: str | None,
     task_state_text: str | None,
@@ -419,6 +420,17 @@ def build_context_messages(
                 content=summary_text,
                 estimated_chars=len(summary_text),
                 estimated_tokens=estimator.estimate_text_tokens(summary_text),
+            )
+        )
+
+    if question_frame_text:
+        planned_layers.append(
+            _LayerSpec(
+                name="question_frame",
+                role="system",
+                content=question_frame_text,
+                estimated_chars=len(question_frame_text),
+                estimated_tokens=estimator.estimate_text_tokens(question_frame_text),
             )
         )
 

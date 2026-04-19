@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,13 @@ except ImportError:  # pragma: no cover - import fallback for lightweight tests
 from .agent import HumanMessage, build_agent
 from .config import DEFAULT_SESSION_ID, AppConfig, build_app_config
 from .user_memory import build_user_memory, merge_user_memory, save_user_memory
+
+
+@dataclass(frozen=True)
+class AgentRunTrace:
+    answer: str
+    messages: list[Any]
+    source_messages: list[Any] | None = None
 
 
 def build_sqlite_checkpointer(db_path: str | Path) -> Any | None:
@@ -52,7 +60,12 @@ def get_graph_state(graph: Any, config: dict[str, Any]) -> Any | None:
     getter = getattr(graph, "get_state", None)
     if getter is None:
         return None
-    return getter(config)
+    try:
+        return getter(config)
+    except ValueError as exc:
+        if "checkpointer" in str(exc).lower():
+            return None
+        raise
 
 
 def run_graph_invoke(graph: Any, state: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
@@ -102,6 +115,16 @@ def extract_messages_from_result(result: dict[str, Any] | None) -> list[Any]:
     return messages if isinstance(messages, list) else []
 
 
+def extract_messages_from_state(state: Any | None) -> list[Any]:
+    if state is None:
+        return []
+    state_values = getattr(state, "values", None)
+    if not isinstance(state_values, dict):
+        return []
+    messages = state_values.get("messages", []) or []
+    return messages if isinstance(messages, list) else []
+
+
 def extract_final_answer(
     result: dict[str, Any] | None,
     state: Any | None,
@@ -117,7 +140,7 @@ def extract_final_answer(
     return message_content(messages[-1])
 
 
-def run_or_resume(
+def run_or_resume_with_trace(
     question: str,
     index_dir: str | Path,
     session_id: str = DEFAULT_SESSION_ID,
@@ -126,7 +149,7 @@ def run_or_resume(
     interrupt_after: list[str] | None = None,
     *,
     app_config: AppConfig | None = None,
-) -> str:
+) -> AgentRunTrace:
     if HumanMessage is None:
         raise ImportError("Missing runtime dependencies for LangGraph execution.")
 
@@ -147,6 +170,7 @@ def run_or_resume(
     ensure_log_file(agent.log_path)
     config = get_thread_config(session_id)
     state = get_graph_state(agent.graph, config)
+    prior_message_count = len(extract_messages_from_state(state))
     next_nodes = tuple(getattr(state, "next", ()) or ())
 
     if resume:
@@ -187,12 +211,8 @@ def run_or_resume(
     post_state = get_graph_state(agent.graph, config)
     post_next_nodes = tuple(getattr(post_state, "next", ()) or ())
     final_answer = extract_final_answer(result, post_state, agent._message_content)
-    state_values = getattr(post_state, "values", None)
-    persisted_messages = (
-        state_values.get("messages", [])
-        if isinstance(state_values, dict)
-        else extract_messages_from_result(result)
-    )
+    persisted_messages = extract_messages_from_state(post_state) or extract_messages_from_result(result)
+    source_messages = list(persisted_messages[prior_message_count:])
     observed_memory = build_user_memory(
         list(persisted_messages),
         message_content=agent._message_content,
@@ -212,13 +232,43 @@ def run_or_resume(
             f"pending_nodes: {', '.join(post_next_nodes)}\n"
             "resume_hint: call the same entrypoint with the same session_id and --resume",
         )
-        return final_answer or f"[checkpoint saved] resume with session_id={session_id}"
+        return AgentRunTrace(
+            answer=final_answer or f"[checkpoint saved] resume with session_id={session_id}",
+            messages=list(persisted_messages),
+            source_messages=source_messages,
+        )
 
     if final_answer is None:
         raise RuntimeError("Graph execution completed without any messages.")
 
     append_log(agent.log_path, f"===== Final Answer =====\n{final_answer}")
-    return final_answer
+    return AgentRunTrace(
+        answer=final_answer,
+        messages=list(persisted_messages),
+        source_messages=source_messages,
+    )
+
+
+def run_or_resume(
+    question: str,
+    index_dir: str | Path,
+    session_id: str = DEFAULT_SESSION_ID,
+    checkpointer: Any | None = None,
+    resume: bool = False,
+    interrupt_after: list[str] | None = None,
+    *,
+    app_config: AppConfig | None = None,
+) -> str:
+    trace = run_or_resume_with_trace(
+        question=question,
+        index_dir=index_dir,
+        session_id=session_id,
+        checkpointer=checkpointer,
+        resume=resume,
+        interrupt_after=interrupt_after,
+        app_config=app_config,
+    )
+    return trace.answer
 
 
 def run_demo(

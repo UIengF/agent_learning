@@ -12,6 +12,7 @@ class ContextMetricsTests(TestCase):
             base_messages=[{"role": "human", "content": "question"}],
             system_text="system prompt",
             summary_text="summary layer is very long",
+            question_frame_text="question frame",
             user_memory_text=None,
             evidence_cache_text="evidence cache is very long too",
             task_state_text=None,
@@ -25,7 +26,10 @@ class ContextMetricsTests(TestCase):
 
         metrics = build_context_metrics(result)
 
-        self.assertEqual(metrics.kept_layer_names, ("system_prompt", "session_summary", "live_messages", "evidence_cache"))
+        self.assertEqual(
+            metrics.kept_layer_names,
+            ("system_prompt", "session_summary", "question_frame", "live_messages", "evidence_cache"),
+        )
         self.assertEqual(metrics.dropped_layer_names, ())
         self.assertEqual(metrics.truncated_layer_names, ())
         self.assertGreater(metrics.estimated_total_chars, 0)
@@ -36,6 +40,7 @@ class ContextMetricsTests(TestCase):
             base_messages=[{"role": "human", "content": "current question"}],
             system_text="system prompt",
             summary_text="summary layer that becomes expendable",
+            question_frame_text="question frame",
             user_memory_text="user memory",
             evidence_cache_text="evidence cache",
             task_state_text="task state",

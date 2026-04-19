@@ -13,6 +13,7 @@ class ContextBuilderTests(TestCase):
             base_messages=[{"role": "human", "content": "current question"}],
             system_text="system prompt",
             summary_text="Session summary of earlier messages:\n- previous_topic: earlier",
+            question_frame_text="Question frame:\ntask_intent: compare",
             user_memory_text="User memory:\npreferred_language: zh",
             evidence_cache_text="Evidence cache:\ncached_web_queries: OpenAI",
             task_state_text="Task state:\nnext_action: web_search",
@@ -28,6 +29,7 @@ class ContextBuilderTests(TestCase):
                 "system_prompt",
                 "user_memory",
                 "session_summary",
+                "question_frame",
                 "live_messages",
                 "evidence_cache",
                 "task_state",
@@ -43,6 +45,7 @@ class ContextBuilderTests(TestCase):
             base_messages=[{"role": "human", "content": "current question"}],
             system_text="system prompt",
             summary_text=None,
+            question_frame_text=None,
             user_memory_text=None,
             evidence_cache_text=None,
             task_state_text=None,
@@ -68,6 +71,7 @@ class ContextBuilderTests(TestCase):
             base_messages=[{"role": "human", "content": "current question"}],
             system_text="system prompt",
             summary_text="summary",
+            question_frame_text="question frame",
             user_memory_text=None,
             evidence_cache_text=None,
             task_state_text="task",
@@ -76,21 +80,23 @@ class ContextBuilderTests(TestCase):
             human_message_factory=None,
         )
 
-        self.assertEqual(tuple(layer.name for layer in result.layers), ("system_prompt", "session_summary", "live_messages", "task_state"))
+        self.assertEqual(tuple(layer.name for layer in result.layers), ("system_prompt", "session_summary", "question_frame", "live_messages", "task_state"))
         self.assertEqual(result.layers[0].content, "system prompt")
         self.assertEqual(result.layers[1].content, "summary")
-        self.assertEqual(result.layers[2].content, "1 messages")
-        self.assertEqual(result.layers[3].content, "task")
+        self.assertEqual(result.layers[2].content, "question frame")
+        self.assertEqual(result.layers[3].content, "1 messages")
+        self.assertEqual(result.layers[4].content, "task")
         self.assertEqual(result.layers[0].estimated_chars, len("system prompt"))
-        self.assertEqual(result.layers[2].estimated_chars, len("current question"))
+        self.assertEqual(result.layers[3].estimated_chars, len("current question"))
         self.assertGreater(result.layers[0].estimated_tokens, 0)
-        self.assertGreater(result.layers[2].estimated_tokens, 0)
+        self.assertGreater(result.layers[3].estimated_tokens, 0)
 
     def test_build_context_messages_drops_low_priority_layers_when_budget_is_tight(self) -> None:
         result = build_context_messages(
             base_messages=[{"role": "human", "content": "current question with enough length"}],
             system_text="system prompt",
             summary_text="summary layer that should be dropped first",
+            question_frame_text="question frame that should still fit",
             user_memory_text="user memory that should still fit",
             evidence_cache_text="evidence cache that should be dropped first",
             task_state_text="task state that should still fit",
@@ -104,11 +110,11 @@ class ContextBuilderTests(TestCase):
 
         self.assertEqual(
             tuple(layer.name for layer in result.layers),
-            ("system_prompt", "user_memory", "live_messages", "task_state"),
+            ("system_prompt", "question_frame", "live_messages", "task_state"),
         )
         self.assertEqual(
             tuple(layer.name for layer in result.dropped_layers),
-            ("evidence_cache", "session_summary"),
+            ("evidence_cache", "session_summary", "user_memory"),
         )
         self.assertLessEqual(result.estimated_total_chars, 140)
 
@@ -117,6 +123,7 @@ class ContextBuilderTests(TestCase):
             base_messages=[{"role": "human", "content": "question"}],
             system_text="system prompt",
             summary_text="summary layer is very long",
+            question_frame_text="question frame",
             user_memory_text=None,
             evidence_cache_text="evidence cache is very long too",
             task_state_text=None,
@@ -132,15 +139,17 @@ class ContextBuilderTests(TestCase):
         )
 
         self.assertEqual(result.messages[1]["content"], "summary laye")
-        self.assertEqual(result.messages[3]["content"], "evidence cache")
+        self.assertEqual(result.messages[2]["content"], "question frame")
+        self.assertEqual(result.messages[4]["content"], "evidence cache")
         self.assertEqual(result.layers[1].status, "truncated")
-        self.assertEqual(result.layers[3].status, "truncated")
+        self.assertEqual(result.layers[4].status, "truncated")
 
     def test_build_context_messages_supports_token_budget(self) -> None:
         result = build_context_messages(
             base_messages=[{"role": "human", "content": "current question"}],
             system_text="system prompt",
             summary_text="summary layer that becomes expendable",
+            question_frame_text="question frame",
             user_memory_text="user memory",
             evidence_cache_text="evidence cache",
             task_state_text="task state",
@@ -195,6 +204,7 @@ class ContextBuilderTests(TestCase):
             ],
             system_text="system prompt",
             summary_text=None,
+            question_frame_text="Question frame:\nfocus_dimensions: implementation",
             user_memory_text=None,
             evidence_cache_text="Evidence cache:\ncached_web_queries: recent openai news",
             task_state_text="Task state:\nnext_action: answer",
@@ -211,18 +221,20 @@ class ContextBuilderTests(TestCase):
             tuple(layer.name for layer in result.layers),
             (
                 "system_prompt",
+                "question_frame",
                 "live_messages_compressed",
                 "live_messages_recent",
                 "evidence_cache",
                 "task_state",
             ),
         )
-        self.assertIn("older question", result.messages[1]["content"])
-        self.assertIn("recent openai news", result.messages[1]["content"])
-        self.assertIn("https://openai.com/news", result.messages[1]["content"])
-        self.assertIn("compressed", result.messages[1]["content"])
-        self.assertEqual(result.messages[2]["role"], "human")
-        self.assertEqual(result.messages[2]["content"], "current question")
+        self.assertEqual(result.messages[1]["content"], "Question frame:\nfocus_dimensions: implementation")
+        self.assertIn("older question", result.messages[2]["content"])
+        self.assertIn("recent openai news", result.messages[2]["content"])
+        self.assertIn("https://openai.com/news", result.messages[2]["content"])
+        self.assertIn("compressed", result.messages[2]["content"])
+        self.assertEqual(result.messages[3]["role"], "human")
+        self.assertEqual(result.messages[3]["content"], "current question")
         self.assertEqual(result.messages[-1]["content"], "Task state:\nnext_action: answer")
 
     def test_budget_drops_compressed_live_messages_before_task_state(self) -> None:
@@ -241,6 +253,7 @@ class ContextBuilderTests(TestCase):
             ],
             system_text="system prompt",
             summary_text="summary layer",
+            question_frame_text="Question frame:\nfocus_dimensions: implementation",
             user_memory_text=None,
             evidence_cache_text="Evidence cache:\ncached_fetched_urls: https://openai.com/news",
             task_state_text="Task state:\nnext_action: answer",

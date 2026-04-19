@@ -18,11 +18,16 @@ class WebUiTests(TestCase):
         self.assertEqual(args.port, 8765)
 
     def test_main_dispatches_ui_command(self) -> None:
-        with patch("graph_rag_app.cli.serve_ui", return_value=0) as serve_ui:
+        with patch("graph_rag_app.cli.serve_fastapi", return_value=0) as serve_fastapi:
             exit_code = main(["ui", "--index-dir", ".\\agent", "--host", "127.0.0.1", "--port", "8765"])
 
         self.assertEqual(exit_code, 0)
-        serve_ui.assert_called_once_with(index_dir=".\\agent", host="127.0.0.1", port=8765)
+        serve_fastapi.assert_called_once_with(
+            index_dir=".\\agent",
+            host="127.0.0.1",
+            port=8765,
+            reload=False,
+        )
 
     def test_parse_ask_payload_requires_question(self) -> None:
         with self.assertRaisesRegex(ValueError, "Question is required"):
@@ -96,6 +101,8 @@ class WebUiTests(TestCase):
         self.assertIn("function renderMarkdown", app_js)
         self.assertIn('class="markdown-answer"', app_js)
         self.assertNotIn("<pre>${escapeHtml(data.answer)}</pre>", app_js)
+        self.assertIn("function renderTable", app_js)
+        self.assertIn('class="markdown-table"', app_js)
 
     def test_static_page_uses_project_friendly_copy(self) -> None:
         index_html = Path("graph_rag_app/static/index.html").read_text(encoding="utf-8")
@@ -112,4 +119,33 @@ class WebUiTests(TestCase):
         self.assertIn("const conversationHistory = [];", app_js)
         self.assertIn("history: resumeInput.checked ? conversationHistory.slice(-4) : []", app_js)
         self.assertIn("conversationHistory.push", app_js)
+
+    def test_static_app_no_longer_renders_answer_sources(self) -> None:
+        app_js = Path("graph_rag_app/static/app.js").read_text(encoding="utf-8")
+
+        self.assertNotIn("function renderSources", app_js)
+        self.assertNotIn("renderSources(data.sources || [], data.retrieval_debug || {})", app_js)
+        self.assertNotIn('class="sources"', app_js)
+        self.assertNotIn('class="source-link"', app_js)
+        self.assertNotIn("source.source_type", app_js)
+        self.assertNotIn("source.url", app_js)
+        self.assertNotIn("source.source_path", app_js)
+
+    def test_static_app_supports_markdown_tables(self) -> None:
+        app_js = Path("graph_rag_app/static/app.js").read_text(encoding="utf-8")
+        styles_css = Path("graph_rag_app/static/styles.css").read_text(encoding="utf-8")
+
+        self.assertIn("function splitTableRow", app_js)
+        self.assertIn("function looksLikeTableBlock", app_js)
+        self.assertIn("function renderTable", app_js)
+        self.assertIn('class="table-wrap"', app_js)
+        self.assertIn('class="markdown-table"', app_js)
+        self.assertIn(".markdown-table", styles_css)
+        self.assertIn(".table-wrap", styles_css)
+
+    def test_static_page_uses_versioned_static_assets(self) -> None:
+        index_html = Path("graph_rag_app/static/index.html").read_text(encoding="utf-8")
+
+        self.assertIn('/static/styles.css?v=', index_html)
+        self.assertIn('/static/app.js?v=', index_html)
 

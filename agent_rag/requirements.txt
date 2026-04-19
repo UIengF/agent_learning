@@ -1,0 +1,9 @@
+beautifulsoup4
+fastapi
+langchain-core
+langchain-openai
+langgraph
+langgraph-checkpoint-sqlite
+pydantic
+requests
+uvicorn[standard]

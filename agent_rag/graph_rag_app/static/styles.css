@@ -277,6 +277,31 @@ button {
   font-weight: 650;
 }
 
+.table-wrap {
+  overflow-x: auto;
+  margin: 14px 0;
+}
+
+.markdown-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 360px;
+  background: #fbfcfc;
+}
+
+.markdown-table th,
+.markdown-table td {
+  border: 1px solid var(--line);
+  padding: 10px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.markdown-table th {
+  background: #f2f5f3;
+  font-weight: 700;
+}
+
 @media (max-width: 860px) {
   .app-shell {
     grid-template-columns: 1fr;

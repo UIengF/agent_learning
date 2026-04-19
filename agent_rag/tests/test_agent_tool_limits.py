@@ -175,11 +175,13 @@ class AgentToolLimitTests(unittest.TestCase):
         self.assertIn("Session summary of earlier messages:", contents[1])
         self.assertIn("question 1", contents[1])
         self.assertIn("answer 1", contents[1])
-        self.assertIn("Compressed live messages:", contents[2])
-        self.assertIn("question 2", contents[2])
-        self.assertIn("answer 2", contents[2])
-        self.assertIn("question 3", contents[2])
-        self.assertIn("answer 3", contents[2])
+        self.assertTrue(contents[2].startswith("Question frame:"))
+        self.assertIn("question: question 4", contents[2])
+        self.assertIn("Compressed live messages:", contents[3])
+        self.assertIn("question 2", contents[3])
+        self.assertIn("answer 2", contents[3])
+        self.assertIn("question 3", contents[3])
+        self.assertIn("answer 3", contents[3])
         self.assertIn("question 4", contents)
         self.assertIn("draft answer 4", contents)
         self.assertIn('{"result_count": 1}', contents)
@@ -205,7 +207,9 @@ class AgentToolLimitTests(unittest.TestCase):
         self.assertIn("Session summary of earlier messages:", contents[1])
         self.assertIn("older assistant reasoning", contents[1])
         self.assertIn('{"result_count": 2}', contents[1])
-        self.assertEqual(contents[2], "current question")
+        self.assertTrue(contents[2].startswith("Question frame:"))
+        self.assertIn("question: current question", contents[2])
+        self.assertEqual(contents[3], "current question")
         self.assertIn("latest assistant reasoning", contents)
         self.assertIn('{"result_count": 5}', contents)
 
@@ -402,12 +406,38 @@ class AgentToolLimitTests(unittest.TestCase):
                 "system_prompt",
                 "user_memory",
                 "session_summary",
+                "question_frame",
                 "live_messages",
                 "evidence_cache",
                 "task_state",
                 "reflection_prompt",
             ),
         )
+
+    def test_call_openai_logs_question_frame_on_first_round(self) -> None:
+        logged_entries: list[str] = []
+
+        def append_log(_path, text: str) -> None:  # noqa: ANN001
+            logged_entries.append(text)
+
+        agent = Agent(
+            system="system",
+            append_log=append_log,
+            ensure_log_file=lambda _path: None,
+        )
+        agent.model = FakeModel(FakeMessage(content="final answer", tool_calls=[]))
+        state = {
+            "messages": [
+                {"role": "human", "content": "openai和gemini在agent实现中有哪些异同点"},
+            ]
+        }
+
+        agent.call_openai(state)
+
+        combined = "\n".join(logged_entries)
+        self.assertIn("Question frame", combined)
+        self.assertIn('"task_intent": "compare"', combined)
+        self.assertIn('"target_entities": ["OpenAI", "Gemini"]', combined)
 
     def test_call_openai_rewrites_web_fetch_to_official_result_when_available(self) -> None:
         agent = self._build_agent(
@@ -590,6 +620,47 @@ class AgentToolLimitTests(unittest.TestCase):
         combined = "\n".join(logged_entries)
         self.assertIn("Context metrics:", combined)
         self.assertIn("estimated_total_tokens:", combined)
+
+    def test_call_openai_logs_structured_reflection_result_after_tool_output(self) -> None:
+        logged_entries: list[str] = []
+
+        def append_log(_path, text: str) -> None:  # noqa: ANN001
+            logged_entries.append(text)
+
+        agent = Agent(
+            system="system",
+            append_log=append_log,
+            ensure_log_file=lambda _path: None,
+        )
+        agent.model = FakeModel(
+            FakeMessage(
+                content="need page body",
+                tool_calls=[{"id": "fetch-1", "name": "web_fetch", "args": {"url": "https://openai.com/news"}}],
+            )
+        )
+        state = {
+            "messages": [
+                {"role": "human", "content": "What changed recently about OpenAI agents?"},
+                {
+                    "role": "tool",
+                    "name": "web_search",
+                    "content": (
+                        '{"query":"recent OpenAI agents news","result_count":1,"results":['
+                        '{"title":"OpenAI News","url":"https://openai.com/news","snippet":"Official updates",'
+                        '"source":"duckduckgo_html","rank":1,"is_official":true}]}'
+                    ),
+                },
+            ]
+        }
+
+        agent.call_openai(state)
+
+        combined = "\n".join(logged_entries)
+        self.assertIn("Reflection result", combined)
+        self.assertIn('"llm_decision": "tool_use"', combined)
+        self.assertIn('"recommended_next_action": "web_fetch"', combined)
+        self.assertIn('"latest_tool_name": "web_search"', combined)
+        self.assertIn('"question": "What changed recently about OpenAI agents?"', combined)
 
 
 if __name__ == "__main__":

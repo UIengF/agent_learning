@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import os
+from pathlib import Path
 from unittest import TestCase
 from unittest.mock import patch
 
@@ -10,10 +11,15 @@ from graph_rag_app.config import build_app_config
 class WebConfigTests(TestCase):
     def test_build_app_config_includes_web_defaults(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
-            config = build_app_config("index-dir")
+            with patch("graph_rag_app.config.PROJECT_ENV_PATH", Path("__missing__.env")):
+                config = build_app_config("index-dir")
 
         self.assertTrue(config.web.enabled)
         self.assertEqual(config.web.search_provider, "duckduckgo_html")
+        self.assertEqual(config.web.searxng_url, "http://127.0.0.1:8080")
+        self.assertEqual(config.web.searxng_engines, "")
+        self.assertEqual(config.web.searxng_categories, "general")
+        self.assertEqual(config.web.searxng_language, "zh-CN")
         self.assertEqual(config.web.search_top_k, 5)
         self.assertEqual(config.web.fetch_timeout_seconds, 15)
         self.assertEqual(config.web.fetch_max_bytes, 1_500_000)
@@ -26,6 +32,26 @@ class WebConfigTests(TestCase):
         self.assertEqual(config.scholar.max_count, 20)
         self.assertEqual(config.scholar.engine, "google_scholar")
         self.assertEqual(config.generation.max_rounds, 8)
+
+    def test_build_app_config_reads_searxng_env(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "RAG_WEB_SEARCH_PROVIDER": "searxng",
+                "RAG_SEARXNG_URL": "http://searxng.local:8080",
+                "RAG_SEARXNG_ENGINES": "google,bing",
+                "RAG_SEARXNG_CATEGORIES": "general,science",
+                "RAG_SEARXNG_LANGUAGE": "en-US",
+            },
+            clear=True,
+        ):
+            config = build_app_config("index-dir")
+
+        self.assertEqual(config.web.search_provider, "searxng")
+        self.assertEqual(config.web.searxng_url, "http://searxng.local:8080")
+        self.assertEqual(config.web.searxng_engines, "google,bing")
+        self.assertEqual(config.web.searxng_categories, "general,science")
+        self.assertEqual(config.web.searxng_language, "en-US")
 
     def test_build_app_config_allows_max_rounds_env_override(self) -> None:
         with patch.dict(os.environ, {"RAG_MAX_ROUNDS": "6"}, clear=True):

@@ -58,9 +58,9 @@ class AgentWebIntegrationTests(TestCase):
             with patch("graph_rag_app.agent.load_index", return_value="retriever") as load_index:
                 with patch("graph_rag_app.agent.LocalRAGRetrieveTool", return_value="local-tool") as rag_tool:
                     with patch(
-                        "graph_rag_app.agent.DuckDuckGoHtmlSearchBackend",
-                        return_value="search-backend",
-                    ) as backend_cls:
+                        "graph_rag_app.agent.build_configured_web_search_backend",
+                        return_value=MultiQuerySearchBackend("search-backend"),
+                    ) as backend_builder:
                         with patch(
                             "graph_rag_app.agent.WebSearchTool",
                             return_value="web-search-tool",
@@ -106,7 +106,7 @@ class AgentWebIntegrationTests(TestCase):
         self.assertEqual(result, "agent")
         load_index.assert_called_once_with("existing-index", keyword_weight=0.25)
         rag_tool.assert_called_once_with(store="retriever", min_evidence_score=0.15)
-        backend_cls.assert_called_once_with(timeout_seconds=9, user_agent="agent-test/1.0")
+        backend_builder.assert_called_once_with(app_config.web)
         web_search_tool.assert_called_once()
         wrapped_backend = web_search_tool.call_args.kwargs["backend"]
         self.assertIsInstance(wrapped_backend, MultiQuerySearchBackend)
@@ -142,6 +142,34 @@ class AgentWebIntegrationTests(TestCase):
             user_memory=ANY,
             token_estimator=ANY,
         )
+
+    def test_build_agent_accepts_searxng_provider_when_web_enabled(self) -> None:
+        app_config = AppConfig(
+            kb_path=Path("unused-kb"),
+            model=ModelConfig(api_key="test-key", api_base="https://example.invalid", model_name="model"),
+            embedding=EmbeddingConfig(model="embed-model", max_batch_size=8),
+            retrieval=RetrievalConfig(keyword_weight=0.25),
+            web=WebConfig(enabled=True, search_provider="searxng"),
+            scholar=ScholarConfig(enabled=False),
+            generation=GenerationConfig(min_evidence_score=0.15, max_rounds=4),
+            runtime=RuntimeConfig(),
+        )
+
+        with patch("graph_rag_app.agent.ChatOpenAI", return_value="model-instance"):
+            with patch("graph_rag_app.agent.load_index", return_value="retriever"):
+                with patch("graph_rag_app.agent.LocalRAGRetrieveTool", return_value="local-tool"):
+                    with patch(
+                        "graph_rag_app.agent.build_configured_web_search_backend",
+                        return_value="search-backend",
+                    ) as backend_builder:
+                        with patch("graph_rag_app.agent.WebSearchTool", return_value="web-search-tool"):
+                            with patch("graph_rag_app.agent.WebFetchTool", return_value="web-fetch-tool"):
+                                with patch("graph_rag_app.agent.Agent", return_value="agent") as agent_cls:
+                                    result = build_agent(index_dir="existing-index", app_config=app_config)
+
+        self.assertEqual(result, "agent")
+        backend_builder.assert_called_once_with(app_config.web)
+        agent_cls.assert_called_once()
 
     def test_take_action_converts_tool_failures_into_tool_messages(self) -> None:
         class FailingTool:

@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ENV_PATH = PROJECT_ROOT / ".env"
 DEFAULT_TOP_K = 3
 DEFAULT_KEYWORD_WEIGHT = 0.5
 DEFAULT_SESSION_ID = "graph_rag_default"
@@ -32,6 +34,7 @@ DEFAULT_WEB_USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/136.0.0.0 Safari/537.36 graph-rag-agent/1.0"
 )
+DEFAULT_SEARXNG_URL = "http://127.0.0.1:8080"
 
 
 def parse_bool_env(name: str, default: bool = False) -> bool:
@@ -39,6 +42,24 @@ def parse_bool_env(name: str, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def load_env_file(path: str | Path | None = None) -> None:
+    env_path = Path(path) if path is not None else PROJECT_ENV_PATH
+    if not env_path.is_file():
+        return
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, value = line.split("=", 1)
+        key = name.strip()
+        if not key or key in os.environ:
+            continue
+        cleaned = value.strip()
+        if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in {"'", '"'}:
+            cleaned = cleaned[1:-1]
+        os.environ[key] = cleaned
 
 
 def _parse_int(value: str | None, default: int) -> int:
@@ -101,6 +122,10 @@ class WebConfig:
     fetch_max_bytes: int = 1_500_000
     fetch_max_chars: int = 6000
     user_agent: str = DEFAULT_WEB_USER_AGENT
+    searxng_url: str = DEFAULT_SEARXNG_URL
+    searxng_engines: str = ""
+    searxng_categories: str = "general"
+    searxng_language: str = "zh-CN"
 
 
 @dataclass(frozen=True)
@@ -162,6 +187,7 @@ def build_app_config(
     resume: bool = False,
     interrupt_after: list[str] | tuple[str, ...] | None = None,
 ) -> AppConfig:
+    load_env_file()
     web_defaults = WebConfig()
     scholar_defaults = ScholarConfig()
     return AppConfig(
@@ -200,6 +226,13 @@ def build_app_config(
                 web_defaults.fetch_max_chars,
             ),
             user_agent=os.getenv("RAG_WEB_USER_AGENT", web_defaults.user_agent),
+            searxng_url=os.getenv("RAG_SEARXNG_URL", web_defaults.searxng_url),
+            searxng_engines=os.getenv("RAG_SEARXNG_ENGINES", web_defaults.searxng_engines),
+            searxng_categories=os.getenv(
+                "RAG_SEARXNG_CATEGORIES",
+                web_defaults.searxng_categories,
+            ),
+            searxng_language=os.getenv("RAG_SEARXNG_LANGUAGE", web_defaults.searxng_language),
         ),
         scholar=ScholarConfig(
             enabled=parse_bool_env("RAG_SCHOLAR_ENABLED", scholar_defaults.enabled),
