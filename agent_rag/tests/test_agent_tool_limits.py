@@ -2,7 +2,7 @@
 
 import unittest
 
-from graph_rag_app.agent import Agent
+from graph_rag_app.agent import Agent, PROMPT
 from graph_rag_app.evidence_cache import EvidenceCache
 from graph_rag_app.session_summary import SessionSummary
 from graph_rag_app.task_state import TaskState
@@ -661,6 +661,10 @@ class AgentToolLimitTests(unittest.TestCase):
         self.assertIn('"recommended_next_action": "web_fetch"', combined)
         self.assertIn('"latest_tool_name": "web_search"', combined)
         self.assertIn('"question": "What changed recently about OpenAI agents?"', combined)
+
+    def test_system_prompt_prefers_detailed_answers_by_default(self) -> None:
+        self.assertIn("prefer a detailed, structured response", PROMPT)
+        self.assertIn("multi-paragraph answer", PROMPT)
 
 
 if __name__ == "__main__":

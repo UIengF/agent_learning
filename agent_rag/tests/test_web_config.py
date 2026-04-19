@@ -32,6 +32,7 @@ class WebConfigTests(TestCase):
         self.assertEqual(config.scholar.max_count, 20)
         self.assertEqual(config.scholar.engine, "google_scholar")
         self.assertEqual(config.generation.max_rounds, 8)
+        self.assertEqual(config.context.max_context_chars, 20000)
 
     def test_build_app_config_reads_searxng_env(self) -> None:
         with patch.dict(
@@ -85,7 +86,7 @@ class WebConfigTests(TestCase):
             {
                 "RAG_MAX_RECENT_MESSAGES": "5",
                 "RAG_RECENT_FULL_TURNS": "3",
-                "RAG_MAX_CONTEXT_CHARS": "12000",
+                "RAG_MAX_CONTEXT_CHARS": "20000",
                 "RAG_MAX_CONTEXT_TOKENS": "100000",
                 "RAG_LIVE_MESSAGES_COMPRESSION_ENABLED": "false",
                 "RAG_LIVE_MESSAGES_KEEP_TURNS": "2",
@@ -98,7 +99,7 @@ class WebConfigTests(TestCase):
 
         self.assertEqual(config.context.max_recent_messages, 5)
         self.assertEqual(config.context.recent_full_turns, 3)
-        self.assertEqual(config.context.max_context_chars, 12000)
+        self.assertEqual(config.context.max_context_chars, 20000)
         self.assertEqual(config.context.max_context_tokens, 100000)
         self.assertFalse(config.context.live_messages_compression_enabled)
         self.assertEqual(config.context.live_messages_keep_turns, 2)

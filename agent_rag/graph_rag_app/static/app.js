@@ -6,14 +6,39 @@ const resumeInput = document.querySelector("#resume");
 const submitButton = document.querySelector("#submit-button");
 const clearButton = document.querySelector("#clear-button");
 const statusText = document.querySelector("#status-text");
+const statusIndicator = document.querySelector("#status-indicator");
 const history = document.querySelector("#history");
+const questionPane = document.querySelector("#question-pane");
+const desktopSidebarToggle = document.querySelector("#desktop-sidebar-toggle");
+const mobileSidebarToggle = document.querySelector("#mobile-sidebar-toggle");
 
 let hasAnswers = false;
+let isSidebarOpen = window.innerWidth > 860;
 const conversationHistory = [];
 
-function setStatus(text, isError = false) {
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function setStatus(text, isError = false, isLoading = false) {
   statusText.textContent = text;
   statusText.classList.toggle("error", isError);
+  statusIndicator.classList.toggle("loading", isLoading);
+}
+
+function renderEmptyState() {
+  return `
+    <article class="empty-state">
+      <div class="empty-icon">⌕</div>
+      <h2>先提一个问题</h2>
+      <p>回答会显示在这里，并保留本页最近几轮记录。</p>
+    </article>
+  `;
 }
 
 function clearEmptyState() {
@@ -23,46 +48,21 @@ function clearEmptyState() {
   }
 }
 
-function addAnswerCard(data) {
-  clearEmptyState();
-  const card = document.createElement("article");
-  card.className = "answer-card";
-  card.innerHTML = `
-    <h2>${escapeHtml(data.question)}</h2>
-    <p>回答</p>
-    <div class="markdown-answer">${renderMarkdown(data.answer)}</div>
-    <div class="meta">
-      <span>会话: ${escapeHtml(data.session_id)}</span>
-      <span>索引: ${escapeHtml(data.index_dir)}</span>
-      <span>耗时: ${escapeHtml(String(data.elapsed_seconds))} 秒</span>
-      <span>${data.resume ? "继续会话" : "新问题"}</span>
-    </div>
-  `;
-  history.prepend(card);
-  conversationHistory.push({ question: data.question, answer: data.answer });
-  if (conversationHistory.length > 8) {
-    conversationHistory.shift();
+function setSidebarState(open) {
+  isSidebarOpen = open;
+  questionPane.classList.toggle("open", open);
+  mobileSidebarToggle.classList.toggle("active", open);
+  if (desktopSidebarToggle) {
+    desktopSidebarToggle.classList.toggle("hidden", open);
   }
 }
 
-function addErrorCard(question, message) {
-  clearEmptyState();
-  const card = document.createElement("article");
-  card.className = "answer-card";
-  card.innerHTML = `
-    <h2>${escapeHtml(question || "请求失败")}</h2>
-    <p class="error">${escapeHtml(message)}</p>
-  `;
-  history.prepend(card);
-}
-
-function escapeHtml(value) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
+function syncResponsiveSidebar() {
+  if (window.innerWidth > 860) {
+    setSidebarState(true);
+  } else {
+    setSidebarState(false);
+  }
 }
 
 function renderInlineMarkdown(text) {
@@ -93,13 +93,11 @@ function looksLikeTableBlock(lines, index) {
   if (index + 1 >= lines.length) {
     return false;
   }
-
   const header = String(lines[index] ?? "").trim();
   const separator = String(lines[index + 1] ?? "").trim();
   if (!header.includes("|") || !separator.includes("|")) {
     return false;
   }
-
   const headerCells = splitTableRow(header);
   const separatorCells = splitTableRow(separator);
   return headerCells.length > 1 && headerCells.length === separatorCells.length && isTableSeparatorLine(separator);
@@ -125,9 +123,7 @@ function renderTable(headerLine, bodyLines) {
           <tr>${headers.map((cell) => `<th>${renderInlineMarkdown(cell)}</th>`).join("")}</tr>
         </thead>
         <tbody>
-          ${rows
-            .map((cells) => `<tr>${cells.map((cell) => `<td>${renderInlineMarkdown(cell)}</td>`).join("")}</tr>`)
-            .join("")}
+          ${rows.map((cells) => `<tr>${cells.map((cell) => `<td>${renderInlineMarkdown(cell)}</td>`).join("")}</tr>`).join("")}
         </tbody>
       </table>
     </div>
@@ -257,6 +253,61 @@ function renderMarkdown(markdown) {
   return html.join("");
 }
 
+function addAnswerCard(data) {
+  clearEmptyState();
+  const card = document.createElement("article");
+  card.className = "answer-card";
+  card.innerHTML = `
+    <div class="answer-card-header">
+      <div class="answer-card-title">
+        <div class="answer-icon">✦</div>
+        <h2>${escapeHtml(data.question)}</h2>
+      </div>
+      <span class="answer-time">${escapeHtml(String(data.elapsed_seconds))} s</span>
+    </div>
+    <div class="answer-card-body">
+      <div class="markdown-answer">${renderMarkdown(data.answer)}</div>
+      <div class="meta">
+        <div class="meta-item">
+          <span class="meta-icon">◫</span>
+          <span>Index: ${escapeHtml(data.index_dir)}</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-icon">◎</span>
+          <span>Session: ${escapeHtml(data.session_id)}</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-icon">↺</span>
+          <span>${data.resume ? "Continue" : "Fresh"}</span>
+        </div>
+      </div>
+    </div>
+  `;
+  history.prepend(card);
+  conversationHistory.push({ question: data.question, answer: data.answer });
+  if (conversationHistory.length > 8) {
+    conversationHistory.shift();
+  }
+}
+
+function addErrorCard(question, message) {
+  clearEmptyState();
+  const card = document.createElement("article");
+  card.className = "answer-card";
+  card.innerHTML = `
+    <div class="answer-card-header">
+      <div class="answer-card-title">
+        <div class="answer-icon">!</div>
+        <h2>${escapeHtml(question || "请求失败")}</h2>
+      </div>
+    </div>
+    <div class="answer-card-body">
+      <p class="error">${escapeHtml(message)}</p>
+    </div>
+  `;
+  history.prepend(card);
+}
+
 async function loadConfig() {
   const response = await fetch("/api/config");
   if (!response.ok) {
@@ -278,14 +329,14 @@ form.addEventListener("submit", async (event) => {
   };
 
   if (!payload.question) {
-    setStatus("请输入问题。", true);
+    setStatus("请输入问题。", true, false);
     questionInput.focus();
     return;
   }
 
   submitButton.disabled = true;
   submitButton.textContent = "分析中...";
-  setStatus("正在检索和整理资料。");
+  setStatus("正在检索和整理资料。", false, true);
 
   try {
     const response = await fetch("/api/ask", {
@@ -298,11 +349,14 @@ form.addEventListener("submit", async (event) => {
       throw new Error(data.error?.message || data.error || "请求失败。");
     }
     addAnswerCard(data);
-    setStatus("回答已生成。");
+    setStatus("回答已生成。", false, false);
+    if (window.innerWidth <= 860) {
+      setSidebarState(false);
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : "请求失败。";
     addErrorCard(payload.question, message);
-    setStatus(message, true);
+    setStatus(message, true, false);
   } finally {
     submitButton.disabled = false;
     submitButton.textContent = "开始回答";
@@ -312,13 +366,14 @@ form.addEventListener("submit", async (event) => {
 clearButton.addEventListener("click", () => {
   hasAnswers = false;
   conversationHistory.length = 0;
-  history.innerHTML = `
-    <article class="empty-state">
-      <h2>先提一个问题</h2>
-      <p>回答会显示在这里，并保留本页最近几轮记录。</p>
-    </article>
-  `;
-  setStatus("准备就绪");
+  history.innerHTML = renderEmptyState();
+  setStatus("准备就绪", false, false);
 });
 
+desktopSidebarToggle?.addEventListener("click", () => setSidebarState(true));
+mobileSidebarToggle?.addEventListener("click", () => setSidebarState(!isSidebarOpen));
+window.addEventListener("resize", syncResponsiveSidebar);
+
+history.innerHTML = renderEmptyState();
+syncResponsiveSidebar();
 loadConfig().catch(() => {});

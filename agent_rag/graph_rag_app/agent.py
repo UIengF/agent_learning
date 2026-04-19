@@ -78,6 +78,9 @@ Scholar results can be used directly as grounded paper metadata without fetching
 
 Do not invent facts that are not supported by tool results. If evidence is incomplete, say what is missing.
 If results contain multiple plausible answers, dates, or scenarios, call that out clearly before answering.
+Unless the user explicitly asks for brevity, prefer a detailed, structured response.
+For comparison questions, cover similarities, differences, implementation details, tradeoffs, and practical implications when the evidence supports them.
+When evidence is sufficient, synthesize it into a multi-paragraph answer instead of a terse summary.
 """
 
 REFLECTION_PROMPT_TEMPLATE = """\
