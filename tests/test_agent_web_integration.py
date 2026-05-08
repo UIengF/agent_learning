@@ -134,6 +134,7 @@ class AgentWebIntegrationTests(TestCase):
             [
                 "local-tool",
                 ANY,
+                ANY,
                 "web-search-tool",
                 "scholar-search-tool",
                 "web-fetch-tool",

@@ -19,6 +19,7 @@ The main entrypoint is
 - [tests](D:/Code/agent_learning/tests): automated tests
 - [agent](D:/Code/agent_learning/agent): local retrieval index files
 - [runtime](D:/Code/agent_learning/runtime): generated logs and checkpoints
+- [skills](D:/Code/agent_learning/skills): default harness skills loaded through `load_skill`
 
 ## Common commands
 
@@ -198,9 +199,9 @@ conda run -n langgraph python -m unittest discover -s tests -v
 The agent keeps the existing LangGraph runtime and adds three optional harness
 layers around it:
 
-- Skill loading: put local skills under `skills/<name>/SKILL.md`. The agent sees
-  an inventory of available skills and can call `load_skill` when a skill is
-  relevant to the current research task.
+- Skill loading: default skills live under `skills/<name>/SKILL.md`. The agent
+  sees an inventory of available skills and can call `load_skill` when a skill
+  is relevant to the current research task.
 - Research plan: the agent can call `research_plan_update` to record the current
   question, planned steps, gathered evidence, open gaps, and next action. The
   latest plan is re-injected into context on later model calls.
@@ -216,7 +217,14 @@ RAG_STRUCTURED_TRACE_ENABLED=true
 RAG_STRUCTURED_TRACE_DIR=runtime/traces
 ```
 
-Example skill:
+Built-in skills:
+
+- `retrieval-debug`: local retrieval, chunking, index, query rewrite, and metadata rerank diagnosis.
+- `web-scholar-research`: web search, fetch-before-answer, official-source use, and Google Scholar research.
+- `agent-evaluation`: layered evaluation for retrieval, trajectory, sources, and final answers.
+- `grounded-answering`: final answer synthesis from local, web, and scholar evidence.
+
+Custom skill format:
 
 ```text
 skills/retrieval-debug/SKILL.md

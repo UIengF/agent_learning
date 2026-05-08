@@ -16,6 +16,19 @@ from graph_rag_app.structured_trace import StructuredTraceWriter
 
 
 class HarnessFeatureTests(TestCase):
+    def test_default_project_skills_are_discoverable(self) -> None:
+        skills_dir = Path(__file__).resolve().parents[1] / "skills"
+        registry = SkillRegistry(skills_dir)
+        names = {skill.name for skill in registry.available}
+        inventory = registry.format_inventory()
+
+        self.assertIn("retrieval-debug", names)
+        self.assertIn("web-scholar-research", names)
+        self.assertIn("agent-evaluation", names)
+        self.assertIn("grounded-answering", names)
+        self.assertIsNotNone(inventory)
+        self.assertIn("retrieval-debug", inventory or "")
+
     def test_skill_registry_discovers_inventory_and_loads_body(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             skill_dir = Path(tmpdir) / "skills" / "citation"

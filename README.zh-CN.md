@@ -17,6 +17,7 @@
 - [runtime](D:/Code/agent_learning/runtime)：运行日志、checkpoint 和后台任务状态
 - [evals](D:/Code/agent_learning/evals)：检索和 Agent 评测数据集
 - [scripts](D:/Code/agent_learning/scripts)：启动、状态检查、停止和评测脚本
+- [skills](D:/Code/agent_learning/skills)：可通过 `load_skill` 动态加载的默认 harness skills
 
 ## 常用命令
 
@@ -146,7 +147,7 @@ Invoke-RestMethod `
 
 系统在 LangGraph Agent 外增加了几层工程化 harness：
 
-- Skill loading：将本地 skill 放在 `skills/<name>/SKILL.md`，Agent 可按需调用 `load_skill` 加载说明。
+- Skill loading：默认 skill 放在 `skills/<name>/SKILL.md`，Agent 会看到 skill 清单，并可按需调用 `load_skill` 加载具体策略。
 - Research plan：Agent 可调用 `research_plan_update` 记录问题、计划步骤、已收集证据、证据缺口和下一步行动。
 - Structured trace：运行事件以 JSONL 写入 `runtime/traces`，覆盖上下文构建、LLM 决策、工具调用、缓存命中、checkpoint 和答案摘要。
 - Evidence cache：缓存工具证据，减少重复上下文和 token 消耗。
@@ -159,6 +160,13 @@ RAG_SKILLS_DIR=skills
 RAG_STRUCTURED_TRACE_ENABLED=true
 RAG_STRUCTURED_TRACE_DIR=runtime/traces
 ```
+
+当前内置 skills：
+
+- `retrieval-debug`：用于诊断本地检索、分块、索引、查询改写和元数据重排问题。
+- `web-scholar-research`：用于规划 Web Search、Web Fetch、官方来源优先和 Google Scholar 学术检索。
+- `agent-evaluation`：用于分层评估 retrieval、tool trajectory、sources 和最终答案。
+- `grounded-answering`：用于基于本地、网页和 Scholar 证据合成有依据的最终回答。
 
 ## 权限与后台任务
 
