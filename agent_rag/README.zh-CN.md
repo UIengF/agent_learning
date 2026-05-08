@@ -2,29 +2,29 @@
 
 这是一个本地学术知识库 Agentic RAG 项目，基于 Python、LangGraph 和 FastAPI 构建，支持 CLI、HTTP API 和 Web UI 多入口访问。
 
-请在仓库根目录执行开发、测试、索引构建和运行命令。
+请在 `agent_rag` 项目目录内执行开发、测试、索引构建和运行命令。
 
 ## 入口文件
 
-主入口是 [graph_rag.py](D:/Code/agent_learning/graph_rag.py)。
+主入口是 [graph_rag.py](D:/Code/agent_learning/agent_rag/graph_rag.py)。
 
 ## 项目结构
 
-- [graph_rag.py](D:/Code/agent_learning/graph_rag.py)：CLI 入口
-- [graph_rag_app](D:/Code/agent_learning/graph_rag_app)：应用核心代码
-- [tests](D:/Code/agent_learning/tests)：自动化测试
-- [agent](D:/Code/agent_learning/agent)：本地检索索引目录
-- [runtime](D:/Code/agent_learning/runtime)：运行日志、checkpoint 和后台任务状态
-- [evals](D:/Code/agent_learning/evals)：检索和 Agent 评测数据集
-- [scripts](D:/Code/agent_learning/scripts)：启动、状态检查、停止和评测脚本
-- [skills](D:/Code/agent_learning/skills)：可通过 `load_skill` 动态加载的默认 harness skills
+- [graph_rag.py](D:/Code/agent_learning/agent_rag/graph_rag.py)：CLI 入口
+- [graph_rag_app](D:/Code/agent_learning/agent_rag/graph_rag_app)：应用核心代码
+- [tests](D:/Code/agent_learning/agent_rag/tests)：自动化测试
+- [agent](D:/Code/agent_learning/agent_rag/agent)：本地检索索引目录
+- [runtime](D:/Code/agent_learning/agent_rag/runtime)：运行日志、checkpoint 和后台任务状态
+- [evals](D:/Code/agent_learning/agent_rag/evals)：检索和 Agent 评测数据集
+- [scripts](D:/Code/agent_learning/agent_rag/scripts)：启动、状态检查、停止和评测脚本
+- [skills](D:/Code/agent_learning/agent_rag/skills)：可通过 `load_skill` 动态加载的默认 harness skills
 
 ## 常用命令
 
 进入仓库根目录：
 
 ```powershell
-cd D:\Code\agent_learning
+cd D:\Code\agent_learning\agent_rag
 ```
 
 检查项目使用的 Conda 环境：
@@ -248,7 +248,7 @@ GitHub Actions 会在仓库根目录运行同一组检查。
 
 ## 运行产物
 
-运行产物默认保存在 [runtime](D:/Code/agent_learning/runtime)：
+运行产物默认保存在 [runtime](D:/Code/agent_learning/agent_rag/runtime)：
 
 - `runtime/checkpoints.db`
 - `runtime/logs/graph_rag.log`
@@ -258,4 +258,4 @@ GitHub Actions 会在仓库根目录运行同一组检查。
 - `runtime/evals`
 - `runtime/traces`
 
-本地索引默认保存在 [agent](D:/Code/agent_learning/agent)。
+本地索引默认保存在 [agent](D:/Code/agent_learning/agent_rag/agent)。

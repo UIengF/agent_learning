@@ -32,7 +32,7 @@ class ProjectOperationsTests(unittest.TestCase):
     def test_quality_entrypoint_is_documented_for_local_and_ci_runs(self) -> None:
         pyproject_path = PROJECT_ROOT / "pyproject.toml"
         dev_requirements_path = PROJECT_ROOT / "requirements-dev.txt"
-        workflow_path = PROJECT_ROOT / ".github" / "workflows" / "agent-rag-quality.yml"
+        workflow_path = PROJECT_ROOT.parent / ".github" / "workflows" / "agent-rag-quality.yml"
 
         pyproject = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
         dev_requirements = dev_requirements_path.read_text(encoding="utf-8")
