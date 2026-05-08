@@ -1,5 +1,7 @@
 # Agentic Academic RAG
 
+[中文文档](README.zh-CN.md)
+
 This repository is the active Agentic RAG project.
 
 Use the repository root as the working directory for development, testing,
