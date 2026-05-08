@@ -7,9 +7,6 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-if ($ProjectRoot -notlike "*agent_rag*") {
-    throw "This script must run from the agent_rag project."
-}
 
 $RuntimeDir = Join-Path $ProjectRoot "runtime"
 New-Item -ItemType Directory -Force -Path $RuntimeDir | Out-Null
@@ -37,5 +34,5 @@ $arguments = @(
 
 # Uses: conda run -n langgraph python graph_rag.py serve ...
 $process = Start-Process -FilePath "conda" -ArgumentList $arguments -WorkingDirectory $ProjectRoot -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
-Write-Output "Started agent_rag service on http://$HostName`:$Port with PID $($process.Id)."
+Write-Output "Started Graph RAG service on http://$HostName`:$Port with PID $($process.Id)."
 Write-Output "Logs: $stdout ; $stderr"

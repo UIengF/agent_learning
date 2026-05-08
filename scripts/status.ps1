@@ -6,9 +6,6 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-if ($ProjectRoot -notlike "*agent_rag*") {
-    throw "This script must run from the agent_rag project."
-}
 
 Write-Output "Project: $ProjectRoot"
 Write-Output "Expected Conda environment: $CondaEnv"

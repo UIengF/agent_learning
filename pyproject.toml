@@ -20,9 +20,24 @@ target-version = "py311"
 extend-exclude = [
     ".codex",
     ".learnings",
+    ".vscode",
+    "C++",
     "agent",
+    "artifacts",
+    "learn-claude-code",
+    "learn_api",
+    "local-research-swarm",
     "openspec",
+    "papers",
+    "prompt_shift_outputs",
     "runtime",
+    "test",
+    "tmp",
+    "toy",
+    "download_visual_cot_val.py",
+    "generate_abstracts.py",
+    "make_filtered_appendix_from_grid.py",
+    "make_prompt_shift_figures.py",
 ]
 
 [tool.ruff.lint]
