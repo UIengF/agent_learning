@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
+import time
 from unittest import TestCase
 from unittest.mock import patch
 
@@ -21,9 +21,112 @@ class FakeGraphWithoutCheckpointer:
 
 class RuntimeStateTests(TestCase):
     def test_get_graph_state_treats_missing_checkpointer_as_no_state(self) -> None:
-        state = get_graph_state(FakeGraphWithoutCheckpointer(), {"configurable": {"thread_id": "fresh"}})
+        state = get_graph_state(
+            FakeGraphWithoutCheckpointer(), {"configurable": {"thread_id": "fresh"}}
+        )
 
         self.assertIsNone(state)
+
+    def test_run_or_resume_with_trace_forwards_langsmith_metadata(self) -> None:
+        from graph_rag_app.runtime import run_or_resume_with_trace
+
+        class FakeAgent:
+            def __init__(self) -> None:
+                self.graph = object()
+                self.log_path = Path("runtime/fake.log")
+                self.system = "system"
+                self.user_memory = object()
+
+            @staticmethod
+            def _message_content(message):
+                if isinstance(message, dict):
+                    return str(message.get("content", ""))
+                return str(getattr(message, "content", ""))
+
+            @staticmethod
+            def _is_human_message(message):
+                if isinstance(message, dict):
+                    return message.get("role") in {"human", "user"}
+                return False
+
+            @staticmethod
+            def _shorten(text: str, _max_len: int) -> str:
+                return text
+
+        class FakeState:
+            def __init__(self, messages, next_nodes=()):
+                self.values = {"messages": messages}
+                self.next = next_nodes
+
+        config = build_app_config(".")
+        langsmith_calls: list[dict[str, object]] = []
+
+        from contextlib import contextmanager
+
+        class FakeRun:
+            id = "run-123"
+
+        @contextmanager
+        def fake_langsmith_context(*, config, run_name, metadata, inputs, tags=None):
+            langsmith_calls.append(
+                {
+                    "config": config,
+                    "run_name": run_name,
+                    "metadata": metadata,
+                    "inputs": inputs,
+                    "tags": tags,
+                }
+            )
+            yield FakeRun()
+
+        with patch("graph_rag_app.runtime.build_app_config", return_value=config):
+            with patch("graph_rag_app.runtime.build_agent", return_value=FakeAgent()):
+                with patch(
+                    "graph_rag_app.runtime.get_graph_state",
+                    side_effect=[
+                        None,
+                        FakeState([{"role": "assistant", "content": "done"}]),
+                    ],
+                ):
+                    with patch(
+                        "graph_rag_app.runtime.run_graph_invoke",
+                        return_value={"messages": [{"role": "assistant", "content": "done"}]},
+                    ):
+                        with patch(
+                            "graph_rag_app.runtime.build_user_memory", return_value={"memory": []}
+                        ):
+                            with patch(
+                                "graph_rag_app.runtime.merge_user_memory",
+                                return_value={"memory": []},
+                            ):
+                                with patch("graph_rag_app.runtime.save_user_memory"):
+                                    with patch("graph_rag_app.runtime.ensure_log_file"):
+                                        with patch("graph_rag_app.runtime.append_log"):
+                                            with patch(
+                                                "graph_rag_app.runtime.langsmith_run_context",
+                                                side_effect=fake_langsmith_context,
+                                            ):
+                                                trace = run_or_resume_with_trace(
+                                                    question="What changed?",
+                                                    index_dir="agent",
+                                                    run_metadata={
+                                                        "mode": "eval",
+                                                        "dataset_name": "agent-smoke",
+                                                        "case_id": "case-1",
+                                                        "tags": ["smoke", "local"],
+                                                    },
+                                                )
+
+        self.assertEqual(trace.answer, "done")
+        self.assertEqual(trace.langsmith_run_id, "run-123")
+        self.assertEqual(len(langsmith_calls), 1)
+        self.assertEqual(langsmith_calls[0]["run_name"], "graph_rag.eval.case:case-1")
+        self.assertEqual(langsmith_calls[0]["metadata"]["case_id"], "case-1")
+        self.assertEqual(langsmith_calls[0]["metadata"]["dataset_name"], "agent-smoke")
+        self.assertEqual(
+            langsmith_calls[0]["tags"],
+            ["smoke", "local", "mode:eval", "dataset:agent-smoke", "case:case-1"],
+        )
 
 
 class FastApiAppTests(TestCase):
@@ -132,7 +235,9 @@ class FastApiAppTests(TestCase):
     def test_ask_without_resume_does_not_use_checkpoint_history(self) -> None:
         client = TestClient(create_app(default_index_dir="agent"))
 
-        with patch("graph_rag_app.api.build_sqlite_checkpointer", return_value="checkpointer") as build_checkpointer:
+        with patch(
+            "graph_rag_app.api.build_sqlite_checkpointer", return_value="checkpointer"
+        ) as build_checkpointer:
             with patch(
                 "graph_rag_app.api.run_or_resume_with_trace",
                 return_value=AgentRunTrace(answer="fresh answer", messages=[]),
@@ -160,7 +265,7 @@ class FastApiAppTests(TestCase):
             "results": [
                 {
                     "chunk_id": 1,
-                    "score": 0.8,
+                    "score": 0.95,
                     "text": "Local evidence.",
                     "document_id": "doc-1",
                     "source_path": "Agent/local.md",
@@ -190,7 +295,11 @@ class FastApiAppTests(TestCase):
         trace = AgentRunTrace(
             answer="answer with sources",
             messages=[
-                {"role": "tool", "name": "local_rag_retrieve", "content": json.dumps(local_payload)},
+                {
+                    "role": "tool",
+                    "name": "local_rag_retrieve",
+                    "content": json.dumps(local_payload),
+                },
                 {"role": "tool", "name": "web_search", "content": json.dumps(web_payload)},
                 {"role": "tool", "name": "web_fetch", "content": json.dumps(fetched_payload)},
             ],
@@ -207,11 +316,10 @@ class FastApiAppTests(TestCase):
         data = response.json()
         self.assertEqual(data["answer"], "answer with sources")
         self.assertEqual(data["retrieval_debug"]["source_count"], 2)
-        self.assertEqual(data["sources"][0]["source_type"], "local")
-        self.assertEqual(data["sources"][0]["source_path"], "Agent/local.md")
-        self.assertEqual(data["sources"][1]["source_type"], "web")
-        self.assertEqual(data["sources"][1]["url"], "https://example.com/agent")
-        self.assertEqual(data["sources"][1]["text"], "Fetched page body.")
+        sources_by_type = {source["source_type"]: source for source in data["sources"]}
+        self.assertEqual(sources_by_type["local"]["source_path"], "Agent/local.md")
+        self.assertEqual(sources_by_type["web"]["url"], "https://example.com/agent")
+        self.assertEqual(sources_by_type["web"]["text"], "Fetched page body.")
 
     def test_ask_does_not_return_unfetched_web_search_candidates(self) -> None:
         client = TestClient(create_app(default_index_dir="agent"))
@@ -279,7 +387,7 @@ class FastApiAppTests(TestCase):
             "results": [
                 {
                     "chunk_id": 2,
-                    "score": 0.8,
+                    "score": 0.95,
                     "text": "Current OpenAI evidence.",
                     "document_id": "doc-current",
                     "source_path": "OpenAI/current.md",
@@ -292,10 +400,18 @@ class FastApiAppTests(TestCase):
             answer="answer with current source",
             messages=[
                 {"role": "tool", "name": "local_rag_retrieve", "content": json.dumps(old_payload)},
-                {"role": "tool", "name": "local_rag_retrieve", "content": json.dumps(current_payload)},
+                {
+                    "role": "tool",
+                    "name": "local_rag_retrieve",
+                    "content": json.dumps(current_payload),
+                },
             ],
             source_messages=[
-                {"role": "tool", "name": "local_rag_retrieve", "content": json.dumps(current_payload)},
+                {
+                    "role": "tool",
+                    "name": "local_rag_retrieve",
+                    "content": json.dumps(current_payload),
+                },
             ],
         )
 
@@ -332,7 +448,12 @@ class FastApiAppTests(TestCase):
         with patch("graph_rag_app.api.load_index", return_value=FakeIndex()) as load_index:
             response = client.post(
                 "/api/retrieve",
-                json={"query": "agent tools", "index_dir": "agent", "top_k": 1, "strategy": "hybrid"},
+                json={
+                    "query": "agent tools",
+                    "index_dir": "agent",
+                    "top_k": 1,
+                    "strategy": "hybrid",
+                },
             )
 
         self.assertEqual(response.status_code, 200)
@@ -388,11 +509,47 @@ class FastApiAppTests(TestCase):
                 "truncated": False,
                 "error": "",
             },
-        ):
+        ) as fetch_url:
             response = client.post("/api/web/fetch", json={"url": "https://example.com"})
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["title"], "Example")
+        fetch_url.assert_called_once()
+        self.assertIn("timeout_seconds", fetch_url.call_args.kwargs)
+        self.assertIn("user_agent", fetch_url.call_args.kwargs)
+
+    def test_web_fetch_returns_permission_error_when_policy_blocks_url(self) -> None:
+        client = TestClient(create_app(default_index_dir="agent"))
+        client.app.state.permission_policy = build_app_config(".").permissions
+
+        from graph_rag_app.permissions import ToolPermissionPolicy
+        from graph_rag_app.config import PermissionConfig
+
+        client.app.state.permission_policy = ToolPermissionPolicy(
+            PermissionConfig(allow_local_web_fetch=False)
+        )
+
+        response = client.post("/api/web/fetch", json={"url": "http://localhost:8000"})
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["error"]["code"], "permission_denied")
+
+    def test_retrieve_returns_permission_error_for_disallowed_index_dir(self) -> None:
+        from graph_rag_app.permissions import ToolPermissionPolicy
+        from graph_rag_app.config import PermissionConfig
+
+        client = TestClient(create_app(default_index_dir="agent"))
+        client.app.state.permission_policy = ToolPermissionPolicy(
+            PermissionConfig(allowed_index_roots="agent")
+        )
+
+        response = client.post(
+            "/api/retrieve",
+            json={"query": "agent", "index_dir": "..\\outside"},
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["error"]["code"], "permission_denied")
 
     def test_scholar_search_returns_paper_metadata(self) -> None:
         class FakePaper:
@@ -420,6 +577,42 @@ class FastApiAppTests(TestCase):
         self.assertEqual(data["paper_count"], 1)
         self.assertEqual(data["papers"][0]["title"], "Agent Paper")
 
+    def test_job_endpoints_submit_status_and_log(self) -> None:
+        client = TestClient(create_app(default_index_dir="agent"))
+
+        with patch("graph_rag_app.api.submit_index_build_job") as submit_job:
+            submit_job.return_value = client.app.state.job_manager.submit(
+                "index_build",
+                lambda _log_path: {"index_dir": "agent", "chunk_count": 1},
+            )
+            response = client.post(
+                "/api/jobs/index-build",
+                json={"kb_path": "docs", "output_dir": "agent/job-index"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        job_id = response.json()["job_id"]
+        for _ in range(100):
+            status_response = client.get(f"/api/jobs/{job_id}")
+            if status_response.json()["status"] == "completed":
+                break
+            time.sleep(0.01)
+        status_response = client.get(f"/api/jobs/{job_id}")
+        log_response = client.get(f"/api/jobs/{job_id}/log")
+
+        self.assertEqual(status_response.status_code, 200)
+        self.assertEqual(status_response.json()["job_id"], job_id)
+        self.assertEqual(log_response.status_code, 200)
+        self.assertIn("job_id=", log_response.json()["log"])
+
+    def test_missing_job_returns_404(self) -> None:
+        client = TestClient(create_app(default_index_dir="agent"))
+
+        response = client.get("/api/jobs/missing")
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["error"]["code"], "job_not_found")
+
     def test_static_root_serves_index_html(self) -> None:
         client = TestClient(create_app(default_index_dir="agent"))
 
@@ -446,7 +639,9 @@ class FastApiAppTests(TestCase):
 
 class FastApiCliTests(TestCase):
     def test_parse_args_supports_serve_command(self) -> None:
-        args = parse_args(["serve", "--index-dir", ".\\agent", "--host", "127.0.0.1", "--port", "8765"])
+        args = parse_args(
+            ["serve", "--index-dir", ".\\agent", "--host", "127.0.0.1", "--port", "8765"]
+        )
 
         self.assertEqual(args.command, "serve")
         self.assertEqual(args.index_dir, ".\\agent")
@@ -455,7 +650,9 @@ class FastApiCliTests(TestCase):
 
     def test_main_dispatches_serve_command(self) -> None:
         with patch("graph_rag_app.cli.serve_fastapi", return_value=0) as serve_fastapi:
-            exit_code = main(["serve", "--index-dir", ".\\agent", "--host", "127.0.0.1", "--port", "8765"])
+            exit_code = main(
+                ["serve", "--index-dir", ".\\agent", "--host", "127.0.0.1", "--port", "8765"]
+            )
 
         self.assertEqual(exit_code, 0)
         serve_fastapi.assert_called_once_with(
@@ -467,7 +664,9 @@ class FastApiCliTests(TestCase):
 
     def test_main_dispatches_ui_command_to_fastapi(self) -> None:
         with patch("graph_rag_app.cli.serve_fastapi", return_value=0) as serve_fastapi:
-            exit_code = main(["ui", "--index-dir", ".\\agent", "--host", "127.0.0.1", "--port", "8765"])
+            exit_code = main(
+                ["ui", "--index-dir", ".\\agent", "--host", "127.0.0.1", "--port", "8765"]
+            )
 
         self.assertEqual(exit_code, 0)
         serve_fastapi.assert_called_once_with(
@@ -476,3 +675,24 @@ class FastApiCliTests(TestCase):
             port=8765,
             reload=False,
         )
+
+    def test_parse_args_supports_job_status_and_log_commands(self) -> None:
+        status_args = parse_args(["job", "status", "--job-id", "abc", "--runtime-dir", "jobs"])
+        log_args = parse_args(
+            ["job", "log", "--job-id", "abc", "--runtime-dir", "jobs", "--max-chars", "100"]
+        )
+
+        self.assertEqual(status_args.command, "job")
+        self.assertEqual(status_args.job_command, "status")
+        self.assertEqual(status_args.job_id, "abc")
+        self.assertEqual(log_args.job_command, "log")
+        self.assertEqual(log_args.max_chars, 100)
+
+    def test_main_job_status_returns_stable_error_for_missing_job(self) -> None:
+        with patch("graph_rag_app.cli._print_json") as print_json:
+            exit_code = main(
+                ["job", "status", "--job-id", "missing", "--runtime-dir", "runtime/jobs"]
+            )
+
+        self.assertEqual(exit_code, 1)
+        print_json.assert_called_once_with({"error": "job_not_found", "job_id": "missing"})

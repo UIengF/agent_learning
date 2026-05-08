@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 from unittest import TestCase
@@ -57,4 +57,3 @@ class ScholarToolTests(TestCase):
 
         with self.assertRaises(ValidationError):
             tool.invoke({"topic": "graph rag", "count": 0})
-

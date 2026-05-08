@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import tempfile
 from pathlib import Path
@@ -28,7 +28,9 @@ class UserMemoryTests(TestCase):
 
         self.assertEqual(memory.preferred_language, "zh")
         self.assertEqual(memory.answer_style, "concise")
-        self.assertIn("Use local evidence first and do not invent facts.", memory.stable_constraints)
+        self.assertIn(
+            "Use local evidence first and do not invent facts.", memory.stable_constraints
+        )
         self.assertIn("OpenAI and Gemini agent comparison", memory.recurring_topics)
 
     def test_save_and_load_user_memory_round_trip(self) -> None:
@@ -58,6 +60,7 @@ class UserMemoryTests(TestCase):
 
         self.assertEqual(merged.preferred_language, "zh")
         self.assertEqual(merged.answer_style, "concise")
-        self.assertEqual(merged.stable_constraints, ("Use local evidence first", "Do not invent facts"))
+        self.assertEqual(
+            merged.stable_constraints, ("Use local evidence first", "Do not invent facts")
+        )
         self.assertEqual(merged.recurring_topics, ("OpenAI", "Gemini"))
-

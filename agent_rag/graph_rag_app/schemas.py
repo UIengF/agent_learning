@@ -161,3 +161,48 @@ class ScholarSearchResponse(BaseModel):
     query_count: int
     paper_count: int
     papers: list[ScholarPaper]
+
+
+class IndexBuildJobRequest(BaseModel):
+    kb_path: str = Field(..., min_length=1)
+    output_dir: str = Field(..., min_length=1)
+
+    @field_validator("kb_path", "output_dir")
+    @classmethod
+    def _strip_required_text(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("Value must not be blank.")
+        return stripped
+
+
+class EvalRunJobRequest(BaseModel):
+    dataset: str = Field(..., min_length=1)
+    index_dir: str = "agent"
+    output_dir: str = "runtime/evals"
+    baseline_run: str | None = None
+    tags: list[str] = Field(default_factory=list)
+
+    @field_validator("dataset", "index_dir", "output_dir")
+    @classmethod
+    def _strip_required_text(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("Value must not be blank.")
+        return stripped
+
+
+class JobResponse(BaseModel):
+    job_id: str
+    kind: str
+    status: str
+    created_at: str
+    updated_at: str
+    log_path: str
+    result: dict[str, object] | None = None
+    error: str = ""
+
+
+class JobLogResponse(BaseModel):
+    job_id: str
+    log: str

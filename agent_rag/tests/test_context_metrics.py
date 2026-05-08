@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from unittest import TestCase
 
@@ -28,7 +28,13 @@ class ContextMetricsTests(TestCase):
 
         self.assertEqual(
             metrics.kept_layer_names,
-            ("system_prompt", "session_summary", "question_frame", "live_messages", "evidence_cache"),
+            (
+                "system_prompt",
+                "session_summary",
+                "question_frame",
+                "live_messages",
+                "evidence_cache",
+            ),
         )
         self.assertEqual(metrics.dropped_layer_names, ())
         self.assertEqual(metrics.truncated_layer_names, ())
@@ -58,4 +64,3 @@ class ContextMetricsTests(TestCase):
         self.assertIn("estimated_total_chars:", rendered)
         self.assertIn("estimated_total_tokens:", rendered)
         self.assertIn("kept_layers:", rendered)
-

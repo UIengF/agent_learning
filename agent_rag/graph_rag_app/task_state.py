@@ -74,7 +74,10 @@ def build_task_state(
     evidence_sufficiency = "medium"
 
     if latest_tool_name == "local_rag_retrieve":
-        if latest_tool_payload.get("reason") == "insufficient_evidence" or latest_tool_payload.get("result_count", 0) == 0:
+        if (
+            latest_tool_payload.get("reason") == "insufficient_evidence"
+            or latest_tool_payload.get("result_count", 0) == 0
+        ):
             missing_information.append("insufficient_evidence")
             next_action = "web_search"
             evidence_sufficiency = "low"
@@ -111,7 +114,9 @@ def build_task_state(
     )
 
 
-def format_task_state(task_state: TaskState, *, shorten: Callable[[str, int], str], max_chars: int) -> str:
+def format_task_state(
+    task_state: TaskState, *, shorten: Callable[[str, int], str], max_chars: int
+) -> str:
     lines = [
         "Task state:",
         f"question: {shorten(task_state.question, 240)}",

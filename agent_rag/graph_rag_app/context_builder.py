@@ -290,7 +290,13 @@ def _truncate_layer_tokens(
     if cap <= 0 or layer.estimated_tokens <= cap:
         return layer
 
-    target_chars = max(1, min(len(layer.content), max(1, int(len(layer.content) * (cap / max(layer.estimated_tokens, 1))))))
+    target_chars = max(
+        1,
+        min(
+            len(layer.content),
+            max(1, int(len(layer.content) * (cap / max(layer.estimated_tokens, 1)))),
+        ),
+    )
     if shorten is not None:
         content = shorten(layer.content, target_chars)
     else:
@@ -373,6 +379,8 @@ def build_context_messages(
     evidence_cache_text: str | None,
     task_state_text: str | None,
     reflection_text: str | None,
+    skill_inventory_text: str | None = None,
+    research_plan_text: str | None = None,
     budget: ContextBudget | None = None,
     shorten: Callable[[str, int], str] | None = None,
     message_content: Callable[[Any], str] | None = None,
@@ -409,6 +417,17 @@ def build_context_messages(
                 content=user_memory_text,
                 estimated_chars=len(user_memory_text),
                 estimated_tokens=estimator.estimate_text_tokens(user_memory_text),
+            )
+        )
+
+    if skill_inventory_text:
+        planned_layers.append(
+            _LayerSpec(
+                name="skill_inventory",
+                role="system",
+                content=skill_inventory_text,
+                estimated_chars=len(skill_inventory_text),
+                estimated_tokens=estimator.estimate_text_tokens(skill_inventory_text),
             )
         )
 
@@ -485,6 +504,17 @@ def build_context_messages(
                 content=evidence_cache_text,
                 estimated_chars=len(evidence_cache_text),
                 estimated_tokens=estimator.estimate_text_tokens(evidence_cache_text),
+            )
+        )
+
+    if research_plan_text:
+        planned_layers.append(
+            _LayerSpec(
+                name="research_plan",
+                role="system",
+                content=research_plan_text,
+                estimated_chars=len(research_plan_text),
+                estimated_tokens=estimator.estimate_text_tokens(research_plan_text),
             )
         )
 

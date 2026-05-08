@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from pathlib import Path
 from unittest import TestCase
@@ -20,7 +20,9 @@ class AgentStandardModeTests(TestCase):
     def test_build_agent_loads_existing_index_without_ensuring_kb_index(self) -> None:
         app_config = AppConfig(
             kb_path=Path("unused-kb"),
-            model=ModelConfig(api_key="test-key", api_base="https://example.invalid", model_name="model"),
+            model=ModelConfig(
+                api_key="test-key", api_base="https://example.invalid", model_name="model"
+            ),
             embedding=EmbeddingConfig(model="embed-model", max_batch_size=8),
             retrieval=RetrievalConfig(keyword_weight=0.25),
             web=WebConfig(enabled=False),
@@ -37,4 +39,3 @@ class AgentStandardModeTests(TestCase):
         self.assertEqual(result, "agent")
         load_index.assert_called_once_with("existing-index", keyword_weight=0.25)
         agent_cls.assert_called_once()
-

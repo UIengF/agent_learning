@@ -158,10 +158,13 @@ class WebSearchTests(TestCase):
             top_k=3,
         )
 
-        self.assertEqual([hit.url for hit in merged], [
-            "https://openai.github.io/openai-agents-python",
-            "https://example.com/openai-vs-adk",
-        ])
+        self.assertEqual(
+            [hit.url for hit in merged],
+            [
+                "https://openai.github.io/openai-agents-python",
+                "https://example.com/openai-vs-adk",
+            ],
+        )
         self.assertTrue(merged[0].is_official)
         self.assertFalse(merged[1].is_official)
         self.assertEqual(merged[0].rank, 1)
@@ -199,7 +202,9 @@ class WebSearchTests(TestCase):
         self.assertTrue(merged[0].is_official)
         self.assertFalse(merged[1].is_official)
 
-    def test_merge_ranked_hits_demotes_low_quality_domains_but_keeps_balanced_third_party(self) -> None:
+    def test_merge_ranked_hits_demotes_low_quality_domains_but_keeps_balanced_third_party(
+        self,
+    ) -> None:
         merged = merge_ranked_hits(
             [
                 SearchHit(

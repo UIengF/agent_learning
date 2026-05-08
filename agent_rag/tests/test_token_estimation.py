@@ -10,7 +10,9 @@ class TokenEstimationTests(TestCase):
         gpt_estimator = select_token_estimator("gpt-4o-mini")
         qwen_estimator = select_token_estimator("qwen3.6-plus")
 
-        self.assertNotEqual(gpt_estimator.message_overhead_tokens, qwen_estimator.message_overhead_tokens)
+        self.assertNotEqual(
+            gpt_estimator.message_overhead_tokens, qwen_estimator.message_overhead_tokens
+        )
 
     def test_estimate_text_tokens_handles_mixed_text(self) -> None:
         estimator = HeuristicTokenEstimator()
@@ -24,7 +26,9 @@ class TokenEstimationTests(TestCase):
         self.assertGreater(mixed_tokens, english_tokens // 2)
 
     def test_estimate_message_tokens_includes_role_overhead(self) -> None:
-        estimator = HeuristicTokenEstimator(message_overhead_tokens=4, tool_message_overhead_tokens=8)
+        estimator = HeuristicTokenEstimator(
+            message_overhead_tokens=4, tool_message_overhead_tokens=8
+        )
 
         user_tokens = estimator.estimate_message_tokens(
             {"role": "human", "content": "short question"},

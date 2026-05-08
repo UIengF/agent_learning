@@ -1,9 +1,9 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from unittest import TestCase
 
 from graph_rag_app.context_budget import ContextBudget
-from graph_rag_app.context_builder import ContextBuildResult, ContextLayer, build_context_messages
+from graph_rag_app.context_builder import ContextBuildResult, build_context_messages
 from graph_rag_app.token_estimation import HeuristicTokenEstimator
 
 
@@ -38,7 +38,9 @@ class ContextBuilderTests(TestCase):
         )
         self.assertEqual(result.messages[0]["content"], "system prompt")
         self.assertEqual(result.messages[1]["content"], "User memory:\npreferred_language: zh")
-        self.assertTrue(result.messages[-1]["content"].startswith("You just received tool results."))
+        self.assertTrue(
+            result.messages[-1]["content"].startswith("You just received tool results.")
+        )
 
     def test_build_context_messages_omits_empty_layers(self) -> None:
         result = build_context_messages(
@@ -80,7 +82,10 @@ class ContextBuilderTests(TestCase):
             human_message_factory=None,
         )
 
-        self.assertEqual(tuple(layer.name for layer in result.layers), ("system_prompt", "session_summary", "question_frame", "live_messages", "task_state"))
+        self.assertEqual(
+            tuple(layer.name for layer in result.layers),
+            ("system_prompt", "session_summary", "question_frame", "live_messages", "task_state"),
+        )
         self.assertEqual(result.layers[0].content, "system prompt")
         self.assertEqual(result.layers[1].content, "summary")
         self.assertEqual(result.layers[2].content, "question frame")
@@ -167,7 +172,9 @@ class ContextBuilderTests(TestCase):
         self.assertIn("session_summary", tuple(layer.name for layer in result.dropped_layers))
         self.assertGreater(result.layers[0].estimated_tokens, 0)
 
-    def test_build_context_messages_splits_live_messages_into_recent_and_compressed_layers(self) -> None:
+    def test_build_context_messages_splits_live_messages_into_recent_and_compressed_layers(
+        self,
+    ) -> None:
         result = build_context_messages(
             base_messages=[
                 {"role": "human", "content": "older question"},
@@ -175,7 +182,13 @@ class ContextBuilderTests(TestCase):
                 {
                     "role": "assistant",
                     "content": "",
-                    "tool_calls": [{"id": "search-1", "name": "web_search", "args": {"query": "recent openai news"}}],
+                    "tool_calls": [
+                        {
+                            "id": "search-1",
+                            "name": "web_search",
+                            "args": {"query": "recent openai news"},
+                        }
+                    ],
                 },
                 {
                     "role": "tool",
@@ -191,7 +204,13 @@ class ContextBuilderTests(TestCase):
                 {
                     "role": "assistant",
                     "content": "",
-                    "tool_calls": [{"id": "fetch-1", "name": "web_fetch", "args": {"url": "https://openai.com/news"}}],
+                    "tool_calls": [
+                        {
+                            "id": "fetch-1",
+                            "name": "web_fetch",
+                            "args": {"url": "https://openai.com/news"},
+                        }
+                    ],
                 },
                 {
                     "role": "tool",
@@ -228,7 +247,9 @@ class ContextBuilderTests(TestCase):
                 "task_state",
             ),
         )
-        self.assertEqual(result.messages[1]["content"], "Question frame:\nfocus_dimensions: implementation")
+        self.assertEqual(
+            result.messages[1]["content"], "Question frame:\nfocus_dimensions: implementation"
+        )
         self.assertIn("older question", result.messages[2]["content"])
         self.assertIn("recent openai news", result.messages[2]["content"])
         self.assertIn("https://openai.com/news", result.messages[2]["content"])
@@ -266,6 +287,7 @@ class ContextBuilderTests(TestCase):
             human_message_factory=None,
         )
 
-        self.assertIn("live_messages_compressed", tuple(layer.name for layer in result.dropped_layers))
+        self.assertIn(
+            "live_messages_compressed", tuple(layer.name for layer in result.dropped_layers)
+        )
         self.assertIn("task_state", tuple(layer.name for layer in result.layers))
-

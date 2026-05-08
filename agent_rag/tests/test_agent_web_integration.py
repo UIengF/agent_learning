@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 from pathlib import Path
@@ -18,7 +18,6 @@ from graph_rag_app.config import (
 )
 from graph_rag_app.web_search import MultiQuerySearchBackend
 from graph_rag_app.web_types import FetchResult
-from graph_rag_app.user_memory import UserMemory
 
 
 class _ToolCallCarrier:
@@ -30,7 +29,9 @@ class AgentWebIntegrationTests(TestCase):
     def test_build_agent_registers_web_tools_when_enabled(self) -> None:
         app_config = AppConfig(
             kb_path=Path("unused-kb"),
-            model=ModelConfig(api_key="test-key", api_base="https://example.invalid", model_name="model"),
+            model=ModelConfig(
+                api_key="test-key", api_base="https://example.invalid", model_name="model"
+            ),
             embedding=EmbeddingConfig(model="embed-model", max_batch_size=8),
             retrieval=RetrievalConfig(keyword_weight=0.25),
             web=WebConfig(
@@ -42,7 +43,9 @@ class AgentWebIntegrationTests(TestCase):
                 fetch_max_chars=512,
                 user_agent="agent-test/1.0",
             ),
-            scholar=ScholarConfig(enabled=True, api_key="serp-api-key", default_count=4, max_count=20),
+            scholar=ScholarConfig(
+                enabled=True, api_key="serp-api-key", default_count=4, max_count=20
+            ),
             generation=GenerationConfig(min_evidence_score=0.15, max_rounds=4),
             runtime=RuntimeConfig(),
         )
@@ -56,7 +59,9 @@ class AgentWebIntegrationTests(TestCase):
 
         with patch("graph_rag_app.agent.ChatOpenAI", return_value="model-instance"):
             with patch("graph_rag_app.agent.load_index", return_value="retriever") as load_index:
-                with patch("graph_rag_app.agent.LocalRAGRetrieveTool", return_value="local-tool") as rag_tool:
+                with patch(
+                    "graph_rag_app.agent.LocalRAGRetrieveTool", return_value="local-tool"
+                ) as rag_tool:
                     with patch(
                         "graph_rag_app.agent.build_configured_web_search_backend",
                         return_value=MultiQuerySearchBackend("search-backend"),
@@ -99,7 +104,9 @@ class AgentWebIntegrationTests(TestCase):
                                                 )
                                                 self.assertIsNotNone(captured_fetcher)
                                                 self.assertEqual(
-                                                    captured_fetcher("https://example.com/page").title,
+                                                    captured_fetcher(
+                                                        "https://example.com/page"
+                                                    ).title,
                                                     "Fetched page",
                                                 )
 
@@ -124,7 +131,13 @@ class AgentWebIntegrationTests(TestCase):
         )
         agent_cls.assert_called_once_with(
             "model-instance",
-            ["local-tool", "web-search-tool", "scholar-search-tool", "web-fetch-tool"],
+            [
+                "local-tool",
+                ANY,
+                "web-search-tool",
+                "scholar-search-tool",
+                "web-fetch-tool",
+            ],
             checkpointer=None,
             system=agent_cls.call_args.kwargs["system"],
             ensure_log_file=None,
@@ -133,7 +146,7 @@ class AgentWebIntegrationTests(TestCase):
             max_rounds=4,
             max_recent_messages=8,
             recent_full_turns=3,
-            max_context_chars=12000,
+            max_context_chars=app_config.context.max_context_chars,
             max_context_tokens=100000,
             live_messages_compression_enabled=True,
             live_messages_keep_turns=1,
@@ -141,12 +154,16 @@ class AgentWebIntegrationTests(TestCase):
             live_messages_max_search_results=3,
             user_memory=ANY,
             token_estimator=ANY,
+            skill_registry=ANY,
+            trace_writer=None,
         )
 
     def test_build_agent_accepts_searxng_provider_when_web_enabled(self) -> None:
         app_config = AppConfig(
             kb_path=Path("unused-kb"),
-            model=ModelConfig(api_key="test-key", api_base="https://example.invalid", model_name="model"),
+            model=ModelConfig(
+                api_key="test-key", api_base="https://example.invalid", model_name="model"
+            ),
             embedding=EmbeddingConfig(model="embed-model", max_batch_size=8),
             retrieval=RetrievalConfig(keyword_weight=0.25),
             web=WebConfig(enabled=True, search_provider="searxng"),
@@ -162,10 +179,18 @@ class AgentWebIntegrationTests(TestCase):
                         "graph_rag_app.agent.build_configured_web_search_backend",
                         return_value="search-backend",
                     ) as backend_builder:
-                        with patch("graph_rag_app.agent.WebSearchTool", return_value="web-search-tool"):
-                            with patch("graph_rag_app.agent.WebFetchTool", return_value="web-fetch-tool"):
-                                with patch("graph_rag_app.agent.Agent", return_value="agent") as agent_cls:
-                                    result = build_agent(index_dir="existing-index", app_config=app_config)
+                        with patch(
+                            "graph_rag_app.agent.WebSearchTool", return_value="web-search-tool"
+                        ):
+                            with patch(
+                                "graph_rag_app.agent.WebFetchTool", return_value="web-fetch-tool"
+                            ):
+                                with patch(
+                                    "graph_rag_app.agent.Agent", return_value="agent"
+                                ) as agent_cls:
+                                    result = build_agent(
+                                        index_dir="existing-index", app_config=app_config
+                                    )
 
         self.assertEqual(result, "agent")
         backend_builder.assert_called_once_with(app_config.web)
@@ -205,3 +230,131 @@ class AgentWebIntegrationTests(TestCase):
         self.assertEqual(payload["error_type"], "TimeoutError")
         self.assertIn("timed out", payload["message"])
 
+    def test_take_action_falls_back_to_next_search_result_after_web_fetch_failure(self) -> None:
+        class FallbackFetchTool:
+            name = "web_fetch"
+
+            def __init__(self) -> None:
+                self.urls: list[str] = []
+
+            def invoke(self, args):
+                url = args["url"]
+                self.urls.append(url)
+                if url == "https://docs.example.com/broken":
+                    raise TimeoutError("fetch timed out")
+                return json.dumps(
+                    {
+                        "url": url,
+                        "final_url": url,
+                        "title": "Fallback page",
+                        "text": "Fetched fallback page body.",
+                    }
+                )
+
+        tool = FallbackFetchTool()
+        agent = Agent(tools=[tool])
+        state = {
+            "messages": [
+                {
+                    "role": "human",
+                    "content": "How do the official docs describe tool use?",
+                },
+                {
+                    "role": "tool",
+                    "name": "web_search",
+                    "content": (
+                        '{"query":"official docs tool use","result_count":3,"results":['
+                        '{"title":"Broken official docs","url":"https://docs.example.com/broken",'
+                        '"snippet":"Official tool use docs","source":"search","rank":1,"is_official":true},'
+                        '{"title":"Working official docs","url":"https://docs.example.com/working",'
+                        '"snippet":"Official tool use fallback","source":"search","rank":2,"is_official":true},'
+                        '{"title":"Third party summary","url":"https://blog.example.net/tool-use",'
+                        '"snippet":"Summary","source":"search","rank":3,"is_official":false}]}'
+                    ),
+                },
+                _ToolCallCarrier(
+                    [
+                        {
+                            "id": "fetch-1",
+                            "name": "web_fetch",
+                            "args": {"url": "https://docs.example.com/broken"},
+                        }
+                    ]
+                ),
+            ]
+        }
+
+        result = agent.take_action(state)
+
+        self.assertEqual(
+            tool.urls,
+            ["https://docs.example.com/broken", "https://docs.example.com/working"],
+        )
+        payload = json.loads(result["messages"][0].content)
+        self.assertEqual(payload["url"], "https://docs.example.com/working")
+        self.assertEqual(payload["title"], "Fallback page")
+
+    def test_take_action_fallback_considers_all_current_web_search_results(self) -> None:
+        class FallbackFetchTool:
+            name = "web_fetch"
+
+            def __init__(self) -> None:
+                self.urls: list[str] = []
+
+            def invoke(self, args):
+                url = args["url"]
+                self.urls.append(url)
+                if url != "https://cloud.example.com/working":
+                    raise TimeoutError("fetch failed")
+                return json.dumps(
+                    {
+                        "url": url,
+                        "final_url": url,
+                        "title": "Working page",
+                        "text": "Fetched from an earlier current-turn search result.",
+                    }
+                )
+
+        tool = FallbackFetchTool()
+        agent = Agent(tools=[tool])
+        state = {
+            "messages": [
+                {"role": "human", "content": "How do Gemini docs describe tool use?"},
+                {
+                    "role": "tool",
+                    "name": "web_search",
+                    "content": (
+                        '{"query":"Gemini function calling cloud docs","result_count":1,"results":['
+                        '{"title":"Cloud function calling","url":"https://cloud.example.com/working",'
+                        '"snippet":"Tool use docs","source":"search","rank":1,"is_official":true}]}'
+                    ),
+                },
+                {
+                    "role": "tool",
+                    "name": "web_search",
+                    "content": (
+                        '{"query":"Gemini function calling ai docs","result_count":1,"results":['
+                        '{"title":"AI docs","url":"https://ai.example.com/broken",'
+                        '"snippet":"Tool use docs","source":"search","rank":1,"is_official":true}]}'
+                    ),
+                },
+                _ToolCallCarrier(
+                    [
+                        {
+                            "id": "fetch-1",
+                            "name": "web_fetch",
+                            "args": {"url": "https://ai.example.com/broken"},
+                        }
+                    ]
+                ),
+            ]
+        }
+
+        result = agent.take_action(state)
+
+        self.assertEqual(
+            tool.urls,
+            ["https://ai.example.com/broken", "https://cloud.example.com/working"],
+        )
+        payload = json.loads(result["messages"][0].content)
+        self.assertEqual(payload["url"], "https://cloud.example.com/working")

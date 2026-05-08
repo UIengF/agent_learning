@@ -23,6 +23,7 @@ from .retrieval import (
     EmbeddingBackend,
     LocalRAGStore,
     SearchResult,
+    expand_query_for_retrieval,
     rerank_results_by_metadata,
 )
 
@@ -60,7 +61,12 @@ class BuildReport:
 
 
 class IndexedRetriever:
-    def __init__(self, index_dir: str | Path, keyword_weight: float | None = None):
+    def __init__(
+        self,
+        index_dir: str | Path,
+        keyword_weight: float | None = None,
+        embedding_client: EmbeddingBackend | None = None,
+    ):
         self.index_dir = Path(index_dir)
         self.manifest_path = self.index_dir / DEFAULT_MANIFEST_FILENAME
         self.db_path = self.index_dir / DEFAULT_INDEX_DB_FILENAME
@@ -68,6 +74,7 @@ class IndexedRetriever:
         self.keyword_weight = float(
             keyword_weight if keyword_weight is not None else manifest["config"]["keyword_weight"]
         )
+        self.embedding_client = embedding_client
         self.chunk_records = self._load_chunk_records(self.db_path)
         self.chunk_token_counts = [Counter(record["token_counts"]) for record in self.chunk_records]
         self.chunk_lengths = [int(record["doc_length"]) for record in self.chunk_records]
@@ -191,9 +198,12 @@ class IndexedRetriever:
         return scores
 
     def _dense_scores(self, query: str) -> dict[int, float]:
-        query_tokens = Counter(tokenize(self._normalize_query(query)))
         dim = len(self.chunk_dense_vectors[0]) if self.chunk_dense_vectors else 256
-        query_vector = self._hashed_dense_vector(query_tokens, dim=dim)
+        if self.embedding_client is not None:
+            query_vector = self._normalize_dense_vector(self.embedding_client.embed_query(query))
+        else:
+            query_tokens = Counter(tokenize(self._normalize_query(query)))
+            query_vector = self._hashed_dense_vector(query_tokens, dim=dim)
         scores: dict[int, float] = {}
         for index, chunk_vector in enumerate(self.chunk_dense_vectors):
             score = self._dense_cosine_similarity(query_vector, chunk_vector)
@@ -232,9 +242,10 @@ class IndexedRetriever:
         normalized_query = self._normalize_query(query)
         if not normalized_query:
             return []
+        retrieval_query = self._normalize_query(expand_query_for_retrieval(normalized_query))
 
         if strategy == "sparse":
-            sparse_scores = self._normalize_scores(self._keyword_scores(normalized_query))
+            sparse_scores = self._normalize_scores(self._keyword_scores(retrieval_query))
             ranked = sorted(sparse_scores.items(), key=lambda item: item[1], reverse=True)
             results = [
                 self._build_result(chunk_id, score, "sparse")
@@ -244,7 +255,7 @@ class IndexedRetriever:
             return rerank_results_by_metadata(normalized_query, results, top_k=top_k)
 
         if strategy == "dense":
-            dense_scores = self._normalize_scores(self._dense_scores(normalized_query))
+            dense_scores = self._normalize_scores(self._dense_scores(retrieval_query))
             ranked = sorted(dense_scores.items(), key=lambda item: item[1], reverse=True)
             results = [
                 self._build_result(chunk_id, score, "dense")
@@ -253,24 +264,25 @@ class IndexedRetriever:
             ]
             return rerank_results_by_metadata(normalized_query, results, top_k=top_k)
 
-        keyword_scores = self._normalize_scores(self._keyword_scores(normalized_query))
-        dense_scores = self._normalize_scores(self._dense_scores(normalized_query))
+        keyword_scores = self._normalize_scores(self._keyword_scores(retrieval_query))
+        dense_scores = self._normalize_scores(self._dense_scores(retrieval_query))
         dense_weight = 1.0 - self.keyword_weight
         candidates = set(keyword_scores) | set(dense_scores)
         fused_scores = []
         for chunk_id in candidates:
             if not self._matches_filters(self.chunk_records[chunk_id], filters):
                 continue
-            score = (
-                self.keyword_weight * keyword_scores.get(chunk_id, 0.0)
-                + dense_weight * dense_scores.get(chunk_id, 0.0)
-            )
+            score = self.keyword_weight * keyword_scores.get(
+                chunk_id, 0.0
+            ) + dense_weight * dense_scores.get(chunk_id, 0.0)
             if score <= 0:
                 continue
             fused_scores.append((chunk_id, score))
 
         fused_scores.sort(key=lambda item: item[1], reverse=True)
-        results = [self._build_result(chunk_id, score, "hybrid") for chunk_id, score in fused_scores]
+        results = [
+            self._build_result(chunk_id, score, "hybrid") for chunk_id, score in fused_scores
+        ]
         return rerank_results_by_metadata(normalized_query, results, top_k=top_k)
 
     def search(
@@ -442,7 +454,7 @@ def _expand_short_lead_chunk(
 
     next_chunk = chunks[1].strip()
     if next_chunk.startswith(first_chunk):
-        next_chunk = next_chunk[len(first_chunk):].strip()
+        next_chunk = next_chunk[len(first_chunk) :].strip()
 
     supplement = _take_prefix_for_completion(next_chunk, remaining)
     if not supplement:
@@ -555,7 +567,9 @@ def _init_db(db_path: Path) -> sqlite3.Connection:
         """
     )
     conn.execute("CREATE TABLE IF NOT EXISTS idf (token TEXT PRIMARY KEY, value REAL NOT NULL)")
-    conn.execute("CREATE TABLE IF NOT EXISTS bm25_idf (token TEXT PRIMARY KEY, value REAL NOT NULL)")
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS bm25_idf (token TEXT PRIMARY KEY, value REAL NOT NULL)"
+    )
     conn.execute("DELETE FROM chunks")
     conn.execute("DELETE FROM idf")
     conn.execute("DELETE FROM bm25_idf")
@@ -584,7 +598,9 @@ def build_index(
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     documents = _load_source_documents(kb_path)
-    records = _build_chunk_records(documents, index_config, embedding_client or _default_embedding_client())
+    records = _build_chunk_records(
+        documents, index_config, embedding_client or _default_embedding_client()
+    )
     idf, bm25_idf = _build_idf_tables(records)
 
     db_path = output / DEFAULT_INDEX_DB_FILENAME
@@ -647,8 +663,17 @@ def build_index(
     )
 
 
-def load_index(index_dir: str | Path, *, keyword_weight: float | None = None) -> IndexedRetriever:
-    return IndexedRetriever(index_dir=index_dir, keyword_weight=keyword_weight)
+def load_index(
+    index_dir: str | Path,
+    *,
+    keyword_weight: float | None = None,
+    embedding_client: EmbeddingBackend | None = None,
+) -> IndexedRetriever:
+    return IndexedRetriever(
+        index_dir=index_dir,
+        keyword_weight=keyword_weight,
+        embedding_client=embedding_client or _default_embedding_client(),
+    )
 
 
 def inspect_index(index_dir: str | Path) -> dict[str, Any]:

@@ -50,13 +50,25 @@ _ENTITY_TOKEN_STOPWORDS = {
     "Would",
     "Recent",
     "Latest",
+    "Compare",
 }
 _INTENT_KEYWORDS = {
-    "compare": ("对比", "比较", "区别", "差异", "异同", "vs", "versus"),
-    "explain": ("是什么", "how", "why", "原理", "解释", "实现"),
+    "comparison": (
+        "对比",
+        "比较",
+        "区别",
+        "差异",
+        "异同",
+        "vs",
+        "versus",
+        "compare",
+        "similarities",
+        "differences",
+    ),
+    "explain": ("是什么", "how", "why", "原理", "解释", "实现", "what"),
     "debug": ("为什么", "报错", "失败", "问题", "原因", "debug", "error"),
     "recommend": ("推荐", "适合", "选择", "最好", "best", "recommend"),
-    "plan": ("计划", "规划", "roadmap", "方案", "design"),
+    "plan": ("计划", "规划", "roadmap", "方案", "design", "plan"),
 }
 _FOCUS_KEYWORDS = {
     "implementation": ("实现", "implementation", "how it works", "原理", "mechanism"),
@@ -74,7 +86,7 @@ def build_question_frame(question: str) -> QuestionFrame:
     lowered = normalized_question.lower()
     target_entities = _extract_target_entities(normalized_question, lowered)
     task_intent = _classify_task_intent(lowered)
-    focus_dimensions = _extract_focus_dimensions(lowered)
+    focus_dimensions = _extract_focus_dimensions(lowered, task_intent)
     evidence_scope = EvidenceScope(
         prefer_local=True,
         prefer_official=True,
@@ -101,7 +113,9 @@ def format_question_frame(frame: QuestionFrame) -> str:
     lines = [
         "Question frame:",
         f"question: {frame.question}",
-        "target_entities: " + ", ".join(frame.target_entities) if frame.target_entities else "target_entities:",
+        "target_entities: " + ", ".join(frame.target_entities)
+        if frame.target_entities
+        else "target_entities:",
         f"task_intent: {frame.task_intent}",
         "focus_dimensions: " + ", ".join(frame.focus_dimensions)
         if frame.focus_dimensions
@@ -121,7 +135,9 @@ def format_question_frame(frame: QuestionFrame) -> str:
 
 def _extract_target_entities(question: str, lowered: str) -> tuple[str, ...]:
     seen: list[str] = []
-    for alias, canonical in sorted(_ENTITY_ALIASES.items(), key=lambda item: len(item[0]), reverse=True):
+    for alias, canonical in sorted(
+        _ENTITY_ALIASES.items(), key=lambda item: len(item[0]), reverse=True
+    ):
         if alias in lowered and canonical not in seen:
             seen.append(canonical)
     for token in _CAPITALIZED_TOKEN_PATTERN.findall(question):
@@ -139,11 +155,15 @@ def _classify_task_intent(lowered: str) -> str:
     return "explain"
 
 
-def _extract_focus_dimensions(lowered: str) -> tuple[str, ...]:
+def _extract_focus_dimensions(lowered: str, task_intent: str) -> tuple[str, ...]:
     matched: list[str] = []
     for dimension, keywords in _FOCUS_KEYWORDS.items():
         if any(keyword in lowered for keyword in keywords):
             matched.append(dimension)
+    if task_intent == "comparison":
+        for dimension in ("similarities", "differences", "tradeoffs"):
+            if dimension not in matched:
+                matched.append(dimension)
     if not matched:
         matched.append("core_facts")
     return tuple(matched)
@@ -161,7 +181,7 @@ def _build_success_criteria(
         criteria.append("cover all target entities")
     elif target_entities:
         criteria.append("ground claims about the target entity")
-    if task_intent == "compare":
+    if task_intent == "comparison":
         criteria.append("surface meaningful differences and commonalities")
     if focus_dimensions and focus_dimensions != ("core_facts",):
         criteria.append("address the requested focus dimensions")

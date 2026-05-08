@@ -19,9 +19,11 @@ class ContextBudget:
     )
     drop_order: tuple[str, ...] = (
         "live_messages_compressed",
+        "skill_inventory",
         "evidence_cache",
         "session_summary",
         "user_memory",
+        "research_plan",
         "task_state",
     )
 

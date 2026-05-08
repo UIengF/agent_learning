@@ -26,6 +26,7 @@ body {
 
 body {
   min-height: 100vh;
+  overflow-x: hidden;
   background: var(--page);
   color: var(--ink);
   font-family: "Inter", "Segoe UI", Arial, sans-serif;
@@ -276,6 +277,7 @@ input:focus {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  overflow: hidden;
   background: var(--page);
 }
 

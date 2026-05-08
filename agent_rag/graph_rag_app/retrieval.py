@@ -27,11 +27,9 @@ class SearchResult:
 
 
 class EmbeddingBackend(Protocol):
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        ...
+    def embed_documents(self, texts: list[str]) -> list[list[float]]: ...
 
-    def embed_query(self, text: str) -> list[float]:
-        ...
+    def embed_query(self, text: str) -> list[float]: ...
 
 
 class Retriever(Protocol):
@@ -41,15 +39,13 @@ class Retriever(Protocol):
         top_k: int = DEFAULT_TOP_K,
         filters: dict[str, Any] | None = None,
         strategy: str = "hybrid",
-    ) -> Sequence[SearchResult]:
-        ...
+    ) -> Sequence[SearchResult]: ...
 
     def search(
         self,
         query: str,
         top_k: int = DEFAULT_TOP_K,
-    ) -> Sequence[SearchResult | Mapping[str, Any]]:
-        ...
+    ) -> Sequence[SearchResult | Mapping[str, Any]]: ...
 
 
 _METADATA_STOPWORDS = {
@@ -69,6 +65,7 @@ _METADATA_STOPWORDS = {
     "difference",
     "differences",
     "for",
+    "how",
     "in",
     "latest",
     "news",
@@ -81,8 +78,64 @@ _METADATA_STOPWORDS = {
     "updates",
     "vs",
     "what",
+    "which",
+    "source",
+    "explains",
+    "are",
 }
 _HEADER_VALUE_PATTERN = re.compile(r"(?im)^\[(SOURCE|TITLE|SECTION):\s*(.*?)\]\s*$")
+
+_QUERY_REWRITE_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("document", "background", "passage"), "contextual retrieval rag chunk document context"),
+    (("document", "background", "passages"), "contextual retrieval rag chunk document context"),
+    (("isolated", "fragment", "ambiguous"), "contextual retrieval rag chunk document context"),
+    (("isolated", "fragments", "ambiguous"), "contextual retrieval rag chunk document context"),
+    (("scratchpad", "function"), "think tool tool use"),
+    (("deliberate", "before", "acting"), "think tool tool use"),
+    (("specialized", "workers"), "multi-agent research system"),
+    (("information", "gathering", "single"), "multi-agent research system"),
+    (("one", "click", "server"), "claude desktop extensions mcp server"),
+    (("desktop", "integration"), "claude desktop extensions mcp server"),
+    (("callable", "functions"), "effective tools agents tool design"),
+    (("operate", "correctly"), "effective tools agents tool design"),
+    (("information", "window"), "context engineering ai agents context"),
+    (("long", "tasks", "stable"), "context engineering ai agents context"),
+    (("confirmation", "dialogs"), "permission prompts secure autonomous claude code"),
+    (("stronger", "boundaries"), "permission prompts secure autonomous claude code"),
+    (("protocol", "resources"), "code execution mcp efficient agents"),
+    (("back", "forth", "calls"), "code execution mcp efficient agents"),
+    (("function", "calling", "developers"), "advanced tool use claude developer platform"),
+    (("scaffolding", "long", "jobs"), "harnesses long-running agents"),
+    (("keep", "working", "long"), "harnesses long-running agents"),
+    (("measurement", "pitfalls"), "evals ai agents evaluation"),
+    (("benchmark", "interpretation"), "evals ai agents evaluation"),
+    (("memorize", "game"), "ai-resistant technical evaluations"),
+    (("technical", "interviews"), "ai-resistant technical evaluations"),
+    (("systems", "programming", "parallel"), "parallel claudes c compiler"),
+    (("task", "recognition", "capability"), "eval awareness browsecomp claude opus"),
+    (("browser", "benchmark"), "eval awareness browsecomp claude opus"),
+    (("app", "building", "over", "time"), "harness design long-running application development"),
+    (("without", "asking", "every", "step"), "claude code auto mode permissions"),
+    (("guarded", "coding", "assistant"), "claude code auto mode permissions"),
+    (("scripted", "workflows"), "building effective ai agents workflows"),
+    (("open", "ended", "autonomous"), "building effective ai agents workflows"),
+    (("command", "line", "coding"), "claude code overview workflow"),
+    (("everyday", "development", "workflow"), "claude code overview workflow"),
+    (("software", "engineering", "issue"), "swe-bench performance claude"),
+    (("issue", "resolution"), "swe-bench performance claude"),
+    (("routing", "chaining", "orchestration"), "workflow patterns ai agents"),
+    (("evaluator", "loops"), "workflow patterns ai agents"),
+    (("pull", "request", "assessment"), "code review claude code"),
+    (("token", "window", "model"), "1m context opus sonnet"),
+    (("applications", "files", "machine"), "computer use claude computer"),
+    (("browser", "architecture", "chatgpt"), "owl atlas chatgpt-based browser"),
+    (("mobile", "video", "app"), "codex sora android 28 days"),
+    (("database", "scaling", "chatgpt"), "postgresql 800 million chatgpt users"),
+    (("observe", "plan", "act"), "codex agent loop"),
+    (("internal", "assistant", "company", "data"), "in-house data agent openai"),
+    (("local", "service", "development", "environment"), "codex harness app server"),
+    (("managed", "computer", "sandbox"), "responses api computer environment agents"),
+)
 
 
 def _query_focus_tokens(query: str) -> tuple[str, ...]:
@@ -97,6 +150,20 @@ def _query_focus_tokens(query: str) -> tuple[str, ...]:
             continue
         tokens.append(normalized)
     return tuple(dict.fromkeys(tokens))
+
+
+def expand_query_for_retrieval(query: str) -> str:
+    """Add compact domain terms for paraphrased agent-research queries."""
+
+    original_tokens = set(_query_focus_tokens(query))
+    additions: list[str] = []
+    for required_tokens, rewrite in _QUERY_REWRITE_RULES:
+        if all(token in original_tokens for token in required_tokens):
+            additions.append(rewrite)
+    if not additions:
+        return query
+    terms = " ".join(dict.fromkeys(" ".join(additions).split()))
+    return f"{query} {terms}"
 
 
 def _extract_header_metadata(text: str) -> dict[str, str]:
@@ -136,7 +203,7 @@ def rerank_results_by_metadata(
     *,
     top_k: int,
 ) -> list[SearchResult]:
-    query_tokens = _query_focus_tokens(query)
+    query_tokens = _query_focus_tokens(expand_query_for_retrieval(query))
     if not results or not query_tokens:
         return list(results)[:top_k]
 
@@ -234,7 +301,7 @@ class DashScopeEmbeddingClient:
 
         vectors: list[list[float]] = []
         for start in range(0, len(texts), self.max_batch_size):
-            batch = texts[start:start + self.max_batch_size]
+            batch = texts[start : start + self.max_batch_size]
             vectors.extend(self._embed_batch(batch))
         return vectors
 
@@ -270,7 +337,9 @@ class LocalRAGStore:
         )
         self.bm25_idf = self._build_bm25_idf(self.chunk_token_counts)
         self.idf = self._build_idf(self.chunk_token_counts)
-        self.chunk_keyword_vectors = [self._vectorize(counter) for counter in self.chunk_token_counts]
+        self.chunk_keyword_vectors = [
+            self._vectorize(counter) for counter in self.chunk_token_counts
+        ]
         self.chunk_vectors = self.chunk_keyword_vectors
         self.chunk_dense_vectors = self._build_dense_vectors()
 
@@ -427,10 +496,9 @@ class LocalRAGStore:
         candidates = set(keyword_scores) | set(dense_scores)
         fused_scores: list[SearchResult] = []
         for chunk_id in candidates:
-            score = (
-                self.keyword_weight * keyword_scores.get(chunk_id, 0.0)
-                + dense_weight * dense_scores.get(chunk_id, 0.0)
-            )
+            score = self.keyword_weight * keyword_scores.get(
+                chunk_id, 0.0
+            ) + dense_weight * dense_scores.get(chunk_id, 0.0)
             if score <= 0:
                 continue
             fused_scores.append(

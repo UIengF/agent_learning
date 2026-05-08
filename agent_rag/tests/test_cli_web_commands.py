@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import asdict
 from unittest import TestCase
@@ -66,7 +66,9 @@ class CliWebCommandTests(TestCase):
                 build_app_config.return_value.web.search_top_k = 5
                 build_app_config.return_value.web.fetch_timeout_seconds = 15
                 build_app_config.return_value.web.user_agent = "graph-rag-agent/1.0"
-                with patch("graph_rag_app.cli.build_configured_web_search_backend") as backend_builder:
+                with patch(
+                    "graph_rag_app.cli.build_configured_web_search_backend"
+                ) as backend_builder:
                     backend = backend_builder.return_value
                     backend.search.return_value = [
                         SearchHit(
@@ -141,7 +143,9 @@ class CliWebCommandTests(TestCase):
         )
 
         with patch("graph_rag_app.cli._print_json") as print_json:
-            with patch("graph_rag_app.cli.build_app_config", return_value="app-config") as build_app_config:
+            with patch(
+                "graph_rag_app.cli.build_app_config", return_value="app-config"
+            ) as build_app_config:
                 with patch(
                     "graph_rag_app.cli.run_scholar_search",
                     return_value=response,
@@ -278,4 +282,3 @@ class CliWebCommandTests(TestCase):
     def test_main_requires_web_subcommand(self) -> None:
         with self.assertRaises(SystemExit):
             main(["web"])
-

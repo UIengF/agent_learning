@@ -56,7 +56,11 @@ def truncate_text(text: str, max_chars: int) -> tuple[str, bool]:
 def extract_main_text(html: str) -> dict[str, str]:
     title = _extract_title(html)
     preferred_tag = _detect_preferred_content_tag(html)
-    text = _extract_text_from_tag(html, preferred_tag) if preferred_tag else _extract_visible_text(html)
+    text = (
+        _extract_text_from_tag(html, preferred_tag)
+        if preferred_tag
+        else _extract_visible_text(html)
+    )
     return {"title": title, "text": text}
 
 

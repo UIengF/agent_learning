@@ -92,9 +92,7 @@ def _split_sentences(text: str) -> list[str]:
     if not stripped:
         return []
     sentences = [
-        segment.strip()
-        for segment in SENTENCE_BOUNDARY_PATTERN.split(stripped)
-        if segment.strip()
+        segment.strip() for segment in SENTENCE_BOUNDARY_PATTERN.split(stripped) if segment.strip()
     ]
     return sentences or [stripped]
 
@@ -143,7 +141,7 @@ def _chunk_long_text(text: str, chunk_size: int, chunk_overlap: int) -> list[str
         start = 0
         step = max(1, chunk_size - chunk_overlap)
         while start < len(text):
-            piece = text[start:start + chunk_size].strip()
+            piece = text[start : start + chunk_size].strip()
             if piece:
                 chunks.append(piece)
             start += step

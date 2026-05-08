@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import unittest
 
@@ -32,10 +32,15 @@ class ChunkingTests(unittest.TestCase):
             )
         ]
 
-        records = _build_chunk_records(documents, IndexBuildConfig(chunk_size=200, chunk_overlap=50), None)
+        records = _build_chunk_records(
+            documents, IndexBuildConfig(chunk_size=200, chunk_overlap=50), None
+        )
 
         self.assertEqual(len(records), 1)
-        self.assertIn("[SOURCE: OpenAI/2026-01-23 OpenAI - Unrolling the Codex agent loop.md]", records[0].text)
+        self.assertIn(
+            "[SOURCE: OpenAI/2026-01-23 OpenAI - Unrolling the Codex agent loop.md]",
+            records[0].text,
+        )
         self.assertIn("[TITLE: Unrolling the Codex agent loop]", records[0].text)
         self.assertIn("[SECTION: The agent loop]", records[0].text)
         self.assertIn("Codex orchestrates the model and tools.", records[0].text)
@@ -52,7 +57,9 @@ class ChunkingTests(unittest.TestCase):
             )
         ]
 
-        records = _build_chunk_records(documents, IndexBuildConfig(chunk_size=180, chunk_overlap=40), None)
+        records = _build_chunk_records(
+            documents, IndexBuildConfig(chunk_size=180, chunk_overlap=40), None
+        )
 
         self.assertGreaterEqual(len(records), 2)
         self.assertIn(lead, records[0].text)
@@ -61,4 +68,3 @@ class ChunkingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

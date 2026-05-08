@@ -15,13 +15,25 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import DEFAULT_CHECKPOINT_DB, DEFAULT_SESSION_ID, build_app_config
 from .indexing import inspect_index, load_index
+from .jobs import (
+    BackgroundJobManager,
+    JobNotFound,
+    job_to_dict,
+    submit_eval_run_job,
+    submit_index_build_job,
+)
+from .permissions import PermissionDenied, build_permission_policy
 from .runtime import build_sqlite_checkpointer, run_or_resume_with_trace
 from .scholar_search import run_scholar_search
 from .schemas import (
     AskRequest,
     AskResponse,
     ConfigResponse,
+    EvalRunJobRequest,
     HealthResponse,
+    IndexBuildJobRequest,
+    JobLogResponse,
+    JobResponse,
     RetrievalResultItem,
     RetrieveRequest,
     RetrieveResponse,
@@ -118,6 +130,10 @@ def _error_payload(
 
 def create_app(*, default_index_dir: str = "agent") -> FastAPI:
     app = FastAPI(title="Graph RAG API", version="1.0.0")
+    app_config = build_app_config(default_index_dir)
+    app.state.job_manager = BackgroundJobManager(app_config.jobs.runtime_dir)
+    app.state.app_config = app_config
+    app.state.permission_policy = build_permission_policy(app_config.permissions)
 
     @app.middleware("http")
     async def request_context_middleware(request: Request, call_next):
@@ -160,6 +176,30 @@ def create_app(*, default_index_dir: str = "agent") -> FastAPI:
             content=_error_payload(
                 "runtime_dependency_error",
                 str(exc),
+                request_id=_request_id(request),
+            ),
+            headers={REQUEST_ID_HEADER: _request_id(request)},
+        )
+
+    @app.exception_handler(PermissionDenied)
+    async def permission_denied_handler(request: Request, exc: PermissionDenied) -> JSONResponse:
+        return JSONResponse(
+            status_code=403,
+            content=_error_payload(
+                "permission_denied",
+                str(exc),
+                request_id=_request_id(request),
+            ),
+            headers={REQUEST_ID_HEADER: _request_id(request)},
+        )
+
+    @app.exception_handler(JobNotFound)
+    async def job_not_found_handler(request: Request, exc: JobNotFound) -> JSONResponse:
+        return JSONResponse(
+            status_code=404,
+            content=_error_payload(
+                "job_not_found",
+                f"Unknown job id: {exc.args[0]}",
                 request_id=_request_id(request),
             ),
             headers={REQUEST_ID_HEADER: _request_id(request)},
@@ -208,6 +248,7 @@ def create_app(*, default_index_dir: str = "agent") -> FastAPI:
     @app.post("/api/ask", response_model=AskResponse)
     def ask(payload: AskRequest) -> AskResponse:
         started = time.perf_counter()
+        app.state.permission_policy.validate_index_dir(payload.index_dir)
         question, context_included = _build_question_with_history(payload)
         checkpointer = build_sqlite_checkpointer(DEFAULT_CHECKPOINT_DB) if payload.resume else None
         trace = run_or_resume_with_trace(
@@ -218,7 +259,9 @@ def create_app(*, default_index_dir: str = "agent") -> FastAPI:
             resume=False,
             interrupt_after=None,
         )
-        source_messages = trace.source_messages if trace.source_messages is not None else trace.messages
+        source_messages = (
+            trace.source_messages if trace.source_messages is not None else trace.messages
+        )
         sources = extract_sources_from_messages(source_messages)
         return AskResponse(
             answer=trace.answer,
@@ -237,6 +280,7 @@ def create_app(*, default_index_dir: str = "agent") -> FastAPI:
 
     @app.post("/api/retrieve", response_model=RetrieveResponse)
     def retrieve(payload: RetrieveRequest) -> RetrieveResponse:
+        app.state.permission_policy.validate_index_dir(payload.index_dir)
         results = load_index(payload.index_dir).retrieve(
             payload.query,
             top_k=payload.top_k,
@@ -254,6 +298,7 @@ def create_app(*, default_index_dir: str = "agent") -> FastAPI:
 
     @app.get("/api/index/inspect")
     def index_inspect(index_dir: str) -> dict[str, Any]:
+        app.state.permission_policy.validate_index_dir(index_dir)
         return inspect_index(index_dir)
 
     @app.post("/api/web/search", response_model=WebSearchResponse)
@@ -270,10 +315,20 @@ def create_app(*, default_index_dir: str = "agent") -> FastAPI:
 
     @app.post("/api/web/fetch")
     def web_fetch(payload: WebFetchRequest) -> dict[str, Any]:
-        return _object_to_dict(fetch_url(payload.url))
+        web_config = app.state.app_config.web
+        return _object_to_dict(
+            fetch_url(
+                app.state.permission_policy.validate_web_fetch_url(payload.url),
+                timeout_seconds=web_config.fetch_timeout_seconds,
+                max_bytes=web_config.fetch_max_bytes,
+                max_chars=web_config.fetch_max_chars,
+                user_agent=web_config.user_agent,
+            )
+        )
 
     @app.post("/api/scholar/search", response_model=ScholarSearchResponse)
     def scholar_search(payload: ScholarSearchRequest) -> ScholarSearchResponse:
+        app.state.permission_policy.validate_index_dir(payload.index_dir)
         result = run_scholar_search(
             topic=payload.topic,
             count=payload.count,
@@ -288,5 +343,41 @@ def create_app(*, default_index_dir: str = "agent") -> FastAPI:
             paper_count=len(papers),
             papers=papers,
         )
+
+    @app.post("/api/jobs/index-build", response_model=JobResponse)
+    def submit_index_build(payload: IndexBuildJobRequest) -> JobResponse:
+        app.state.permission_policy.validate_index_dir(payload.output_dir)
+        record = submit_index_build_job(
+            app.state.job_manager,
+            kb_path=payload.kb_path,
+            output_dir=payload.output_dir,
+        )
+        return JobResponse(**job_to_dict(record))
+
+    @app.post("/api/jobs/eval-run", response_model=JobResponse)
+    def submit_eval_run(payload: EvalRunJobRequest) -> JobResponse:
+        app.state.permission_policy.validate_index_dir(payload.index_dir)
+        record = submit_eval_run_job(
+            app.state.job_manager,
+            dataset=payload.dataset,
+            index_dir=payload.index_dir,
+            output_dir=payload.output_dir,
+            baseline_run=payload.baseline_run,
+            tags=payload.tags,
+        )
+        return JobResponse(**job_to_dict(record))
+
+    @app.get("/api/jobs/{job_id}", response_model=JobResponse)
+    def get_job(job_id: str) -> JobResponse:
+        record = app.state.job_manager.get(job_id)
+        return JobResponse(**job_to_dict(record))
+
+    @app.get("/api/jobs/{job_id}/log", response_model=JobLogResponse)
+    def get_job_log(job_id: str) -> JobLogResponse:
+        log = app.state.job_manager.read_log(
+            job_id,
+            max_chars=app.state.app_config.jobs.max_log_chars,
+        )
+        return JobLogResponse(job_id=job_id, log=log)
 
     return app

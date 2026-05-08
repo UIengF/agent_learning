@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import os
 from pathlib import Path
@@ -105,4 +105,3 @@ class WebConfigTests(TestCase):
         self.assertEqual(config.context.live_messages_keep_turns, 2)
         self.assertEqual(config.context.live_messages_max_fetch_chars, 240)
         self.assertEqual(config.context.live_messages_max_search_results, 4)
-

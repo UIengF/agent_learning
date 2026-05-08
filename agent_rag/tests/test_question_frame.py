@@ -10,8 +10,11 @@ class QuestionFrameTests(TestCase):
         frame = build_question_frame("openai和gemini在agent实现中有哪些异同点")
 
         self.assertEqual(frame.target_entities, ("OpenAI", "Gemini"))
-        self.assertEqual(frame.task_intent, "compare")
-        self.assertEqual(frame.focus_dimensions, ("implementation",))
+        self.assertEqual(frame.task_intent, "comparison")
+        self.assertEqual(
+            frame.focus_dimensions,
+            ("implementation", "similarities", "differences", "tradeoffs"),
+        )
         self.assertTrue(frame.evidence_scope.prefer_official)
         self.assertIn("cover all target entities", frame.success_criteria)
         self.assertIn("surface meaningful differences and commonalities", frame.success_criteria)

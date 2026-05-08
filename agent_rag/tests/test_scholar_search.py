@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from unittest import TestCase
 
@@ -210,4 +210,3 @@ class ScholarSearchTests(TestCase):
         self.assertEqual(result.result_count, 1)
         self.assertEqual([hit.url for hit in result.results], ["https://example.com/a"])
         self.assertEqual(backend.calls, [("query one", 1), ("query two", 1)])
-

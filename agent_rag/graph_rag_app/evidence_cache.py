@@ -87,7 +87,8 @@ def format_evidence_cache(evidence_cache: EvidenceCache) -> str | None:
     lines = ["Evidence cache:"]
     if evidence_cache.local_results_by_query:
         lines.append(
-            "cached_local_queries: " + ", ".join(sorted(evidence_cache.local_results_by_query.keys()))
+            "cached_local_queries: "
+            + ", ".join(sorted(evidence_cache.local_results_by_query.keys()))
         )
     if evidence_cache.web_results_by_query:
         lines.append(

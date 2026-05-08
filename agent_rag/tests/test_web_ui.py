@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from pathlib import Path
 from unittest import TestCase
@@ -10,7 +10,9 @@ from graph_rag_app.web_ui import build_ask_response, parse_ask_payload
 
 class WebUiTests(TestCase):
     def test_parse_args_supports_ui_command(self) -> None:
-        args = parse_args(["ui", "--index-dir", ".\\agent", "--host", "127.0.0.1", "--port", "8765"])
+        args = parse_args(
+            ["ui", "--index-dir", ".\\agent", "--host", "127.0.0.1", "--port", "8765"]
+        )
 
         self.assertEqual(args.command, "ui")
         self.assertEqual(args.index_dir, ".\\agent")
@@ -19,7 +21,9 @@ class WebUiTests(TestCase):
 
     def test_main_dispatches_ui_command(self) -> None:
         with patch("graph_rag_app.cli.serve_fastapi", return_value=0) as serve_fastapi:
-            exit_code = main(["ui", "--index-dir", ".\\agent", "--host", "127.0.0.1", "--port", "8765"])
+            exit_code = main(
+                ["ui", "--index-dir", ".\\agent", "--host", "127.0.0.1", "--port", "8765"]
+            )
 
         self.assertEqual(exit_code, 0)
         serve_fastapi.assert_called_once_with(
@@ -47,7 +51,9 @@ class WebUiTests(TestCase):
 
     def test_build_ask_response_calls_runtime(self) -> None:
         with patch("graph_rag_app.web_ui.build_sqlite_checkpointer", return_value="checkpointer"):
-            with patch("graph_rag_app.web_ui.run_or_resume", return_value="final answer") as run_or_resume:
+            with patch(
+                "graph_rag_app.web_ui.run_or_resume", return_value="final answer"
+            ) as run_or_resume:
                 response = build_ask_response(
                     {
                         "question": "What is this?",
@@ -74,7 +80,9 @@ class WebUiTests(TestCase):
 
     def test_build_ask_response_adds_history_without_checkpoint_resume(self) -> None:
         with patch("graph_rag_app.web_ui.build_sqlite_checkpointer", return_value="checkpointer"):
-            with patch("graph_rag_app.web_ui.run_or_resume", return_value="final answer") as run_or_resume:
+            with patch(
+                "graph_rag_app.web_ui.run_or_resume", return_value="final answer"
+            ) as run_or_resume:
                 response = build_ask_response(
                     {
                         "question": "What changed?",
@@ -146,6 +154,5 @@ class WebUiTests(TestCase):
     def test_static_page_uses_versioned_static_assets(self) -> None:
         index_html = Path("graph_rag_app/static/index.html").read_text(encoding="utf-8")
 
-        self.assertIn('/static/styles.css?v=', index_html)
-        self.assertIn('/static/app.js?v=', index_html)
-
+        self.assertIn("/static/styles.css?v=", index_html)
+        self.assertIn("/static/app.js?v=", index_html)

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from pathlib import Path
 from unittest import TestCase
@@ -17,7 +17,9 @@ class CliStandardModeTests(TestCase):
 
     def test_main_ask_uses_run_or_resume_with_index_dir(self) -> None:
         with patch("graph_rag_app.cli.build_sqlite_checkpointer", return_value="checkpointer"):
-            with patch("graph_rag_app.cli.run_or_resume", return_value="final answer") as run_or_resume:
+            with patch(
+                "graph_rag_app.cli.run_or_resume", return_value="final answer"
+            ) as run_or_resume:
                 exit_code = main(
                     [
                         "ask",
@@ -46,7 +48,9 @@ class CliStandardModeTests(TestCase):
             return_value=Path("existing-index"),
         ) as resolve_existing_index:
             with patch("graph_rag_app.cli.build_sqlite_checkpointer", return_value="checkpointer"):
-                with patch("graph_rag_app.cli.run_or_resume", return_value="final answer") as run_or_resume:
+                with patch(
+                    "graph_rag_app.cli.run_or_resume", return_value="final answer"
+                ) as run_or_resume:
                     exit_code = main(["--kb-path", "kb-path", "--question", "What is this?"])
 
         self.assertEqual(exit_code, 0)
@@ -59,4 +63,3 @@ class CliStandardModeTests(TestCase):
             resume=False,
             interrupt_after=None,
         )
-

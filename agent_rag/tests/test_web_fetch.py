@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import socket
 from pathlib import Path
@@ -57,7 +57,9 @@ class _FakeResponse:
 
 
 class _FakeOpener:
-    def __init__(self, response: _FakeResponse | None = None, outcomes: list[object] | None = None) -> None:
+    def __init__(
+        self, response: _FakeResponse | None = None, outcomes: list[object] | None = None
+    ) -> None:
         self.response = response
         self.outcomes = list(outcomes or ([] if response is None else [response]))
         self.calls: list[tuple[str, float | None]] = []
@@ -222,7 +224,9 @@ class WebFetchTests(TestCase):
                 )
 
         self.assertEqual(result.status_code, 200)
-        self.assertEqual(opener.calls, [("https://example.com/article", 2), ("https://example.com/article", 2)])
+        self.assertEqual(
+            opener.calls, [("https://example.com/article", 2), ("https://example.com/article", 2)]
+        )
         sleep.assert_called_once()
 
     def test_fetch_url_does_not_retry_http_403(self) -> None:
@@ -257,4 +261,3 @@ if __name__ == "__main__":
     import unittest
 
     unittest.main()
-

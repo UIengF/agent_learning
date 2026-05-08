@@ -1,0 +1,67 @@
+[project]
+name = "agent-rag"
+version = "0.1.0"
+description = "Local Graph RAG demo with CLI, FastAPI, web search, Scholar search, and evaluation tooling."
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "langchain-core",
+    "langchain-openai",
+    "langgraph",
+    "langgraph-checkpoint-sqlite",
+    "pydantic",
+    "requests",
+    "uvicorn[standard]",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = [
+    ".codex",
+    ".learnings",
+    "agent",
+    "openspec",
+    "runtime",
+]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.pyright]
+include = [
+    "graph_rag.py",
+    "graph_rag_app/config.py",
+    "graph_rag_app/corpus.py",
+    "graph_rag_app/indexing.py",
+    "graph_rag_app/retrieval.py",
+    "graph_rag_app/schemas.py",
+    "graph_rag_app/web_types.py",
+]
+exclude = [
+    ".codex",
+    ".learnings",
+    "agent",
+    "openspec",
+    "runtime",
+]
+pythonVersion = "3.11"
+typeCheckingMode = "basic"
+reportMissingTypeStubs = false
+
+[tool.coverage.run]
+branch = true
+source = ["graph_rag_app"]
+omit = [
+    "*/__pycache__/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 65
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]

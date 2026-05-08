@@ -12,6 +12,7 @@ from .web_types import FetchResult
 try:
     from langchain_core.tools import BaseTool
 except ImportError:  # pragma: no cover - keep imports usable without runtime deps
+
     class BaseTool:  # type: ignore[override]
         args_schema: Type[BaseModel] = BaseModel
 
@@ -42,9 +43,7 @@ class WebSearchInput(BaseModel):
 
 class WebSearchTool(BaseTool):
     name: str = "web_search"
-    description: str = (
-        "Search the public web for recent or missing information after checking the local knowledge base."
-    )
+    description: str = "Search the public web for recent or missing information after checking the local knowledge base."
     args_schema: Type[BaseModel] = WebSearchInput
 
     _backend: Any = PrivateAttr()

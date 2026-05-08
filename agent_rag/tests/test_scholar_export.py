@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
@@ -96,7 +96,9 @@ class ScholarExportTests(TestCase):
 
     def test_build_scholar_filename_sanitizes_topic(self) -> None:
         filename = build_scholar_filename(
-            ScholarSearchResponse(topic="Graph RAG: Papers/2026?", planned_queries=[], result_count=0, results=[]),
+            ScholarSearchResponse(
+                topic="Graph RAG: Papers/2026?", planned_queries=[], result_count=0, results=[]
+            ),
             now=datetime.fromisoformat("2026-04-12T10:20:30+08:00"),
         )
 
@@ -121,4 +123,3 @@ class ScholarExportTests(TestCase):
             self.assertTrue(output_path.exists())
             self.assertEqual(output_path.parent, Path(temp_dir))
             self.assertIn("# Scholar Search: graph rag", output_path.read_text(encoding="utf-8"))
-

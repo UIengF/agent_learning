@@ -97,7 +97,9 @@ def build_session_summary(
     )
 
 
-def format_session_summary(summary: SessionSummary, *, shorten: Callable[[str, int], str], max_chars: int) -> str:
+def format_session_summary(
+    summary: SessionSummary, *, shorten: Callable[[str, int], str], max_chars: int
+) -> str:
     lines = ["Session summary of earlier messages:"]
     for item in summary.previous_topics:
         lines.append(f"- previous_topic: {item}")

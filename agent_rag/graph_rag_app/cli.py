@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 from dataclasses import asdict
 from datetime import datetime
 import json
 import os
+from pathlib import Path
 
 from .config import (
     DEFAULT_CHECKPOINT_DB,
@@ -14,12 +16,16 @@ from .config import (
     build_app_config,
     parse_bool_env,
 )
+from .agent_evaluation import run_evaluation_dataset
+from .eval_datasets import load_evaluation_dataset
+from .eval_reporting import load_evaluation_report, save_evaluation_report
 from .indexing import (
     build_index,
     inspect_index,
     load_index,
     resolve_existing_index_for_kb,
 )
+from .jobs import BackgroundJobManager, JobNotFound, job_to_dict
 from .runtime import build_sqlite_checkpointer, run_or_resume
 from .scholar_export import save_scholar_search_markdown
 from .scholar_search import run_scholar_search
@@ -34,7 +40,9 @@ def _bounded_int(minimum: int, maximum: int):
     def parser(value: str) -> int:
         parsed = int(value)
         if parsed < minimum or parsed > maximum:
-            raise argparse.ArgumentTypeError(f"Expected an integer between {minimum} and {maximum}.")
+            raise argparse.ArgumentTypeError(
+                f"Expected an integer between {minimum} and {maximum}."
+            )
         return parsed
 
     return parser
@@ -77,7 +85,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     index_build.add_argument("--chunk-overlap", type=int, default=None)
     index_build.add_argument("--keyword-weight", type=float, default=None)
 
-    index_inspect = index_subparsers.add_parser("inspect", help="Inspect an existing retrieval index.")
+    index_inspect = index_subparsers.add_parser(
+        "inspect", help="Inspect an existing retrieval index."
+    )
     index_inspect.add_argument("--index-dir", required=True)
 
     query_parser = subparsers.add_parser("query", help="Run retrieval against an existing index.")
@@ -100,7 +110,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     scholar_parser = subparsers.add_parser("scholar", help="Run Google Scholar search commands.")
     scholar_subparsers = scholar_parser.add_subparsers(dest="scholar_command", required=True)
-    scholar_search = scholar_subparsers.add_parser("search", help="Search Google Scholar from a topic.")
+    scholar_search = scholar_subparsers.add_parser(
+        "search", help="Search Google Scholar from a topic."
+    )
     scholar_search.add_argument("--topic", required=True)
     scholar_search.add_argument("--count", type=_bounded_int(1, 20), default=5)
     scholar_search.add_argument("--save-md", action="store_true", default=False)
@@ -122,6 +134,31 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     serve_parser.add_argument("--host", default="127.0.0.1")
     serve_parser.add_argument("--port", type=int, default=8765)
     serve_parser.add_argument("--reload", action="store_true", default=False)
+
+    eval_parser = subparsers.add_parser("eval", help="Run evaluation datasets and persist reports.")
+    eval_subparsers = eval_parser.add_subparsers(dest="eval_command", required=True)
+    eval_run = eval_subparsers.add_parser("run", help="Run a local evaluation dataset.")
+    eval_run.add_argument("--dataset", required=True)
+    eval_run.add_argument("--index-dir", default="agent")
+    eval_run.add_argument("--output-dir", default=str(Path("runtime") / "evals"))
+    eval_run.add_argument("--baseline-run", default=None)
+    eval_run.add_argument("--tag", action="append", default=None)
+    judge_toggle = eval_run.add_mutually_exclusive_group()
+    judge_toggle.add_argument("--judge-enabled", action="store_true", default=False)
+    judge_toggle.add_argument("--judge-disabled", action="store_true", default=False)
+    eval_run.add_argument("--judge-model", default=None)
+    eval_run.add_argument("--judge-api-base", default=None)
+    eval_run.add_argument("--judge-api-key", default=None)
+
+    job_parser = subparsers.add_parser("job", help="Inspect background job status and logs.")
+    job_subparsers = job_parser.add_subparsers(dest="job_command", required=True)
+    job_status = job_subparsers.add_parser("status", help="Read a background job record.")
+    job_status.add_argument("--job-id", required=True)
+    job_status.add_argument("--runtime-dir", default="runtime/jobs")
+    job_log = job_subparsers.add_parser("log", help="Read a background job log.")
+    job_log.add_argument("--job-id", required=True)
+    job_log.add_argument("--runtime-dir", default="runtime/jobs")
+    job_log.add_argument("--max-chars", type=int, default=12000)
 
     _add_runtime_args(parser, include_index_dir=False)
     parser.add_argument(
@@ -246,6 +283,57 @@ def _handle_ask(args: argparse.Namespace) -> int:
     return 0
 
 
+def _handle_eval_run(args: argparse.Namespace) -> int:
+    include_tags = set(args.tag) if args.tag else None
+    dataset = load_evaluation_dataset(Path(args.dataset), include_tags=include_tags)
+    app_config = override_eval_judge_config(build_app_config(args.index_dir), args)
+    report = run_evaluation_dataset(dataset, index_dir=args.index_dir, app_config=app_config)
+    baseline_report = load_evaluation_report(Path(args.baseline_run)) if args.baseline_run else None
+    artifact = save_evaluation_report(
+        report,
+        output_root=Path(args.output_dir),
+        baseline_report=baseline_report,
+    )
+    print(f"Saved evaluation report to {artifact.run_dir}")
+    return 0
+
+
+def _handle_job_status(args: argparse.Namespace) -> int:
+    manager = BackgroundJobManager(args.runtime_dir)
+    try:
+        _print_json(job_to_dict(manager.get(args.job_id)))
+    except JobNotFound:
+        _print_json({"error": "job_not_found", "job_id": args.job_id})
+        return 1
+    return 0
+
+
+def _handle_job_log(args: argparse.Namespace) -> int:
+    manager = BackgroundJobManager(args.runtime_dir)
+    try:
+        print(manager.read_log(args.job_id, max_chars=args.max_chars))
+    except JobNotFound:
+        _print_json({"error": "job_not_found", "job_id": args.job_id})
+        return 1
+    return 0
+
+
+def override_eval_judge_config(app_config, args: argparse.Namespace):
+    enabled = app_config.eval_judge.enabled
+    if getattr(args, "judge_enabled", False):
+        enabled = True
+    if getattr(args, "judge_disabled", False):
+        enabled = False
+    eval_judge = replace(
+        app_config.eval_judge,
+        enabled=enabled,
+        model_name=args.judge_model or app_config.eval_judge.model_name,
+        api_base=args.judge_api_base or app_config.eval_judge.api_base,
+        api_key=args.judge_api_key or app_config.eval_judge.api_key,
+    )
+    return replace(app_config, eval_judge=eval_judge)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     if args.command == "index" and args.index_command == "build":
@@ -262,6 +350,12 @@ def main(argv: list[str] | None = None) -> int:
         return _handle_scholar_search(args)
     if args.command == "ask":
         return _handle_ask(args)
+    if args.command == "eval" and args.eval_command == "run":
+        return _handle_eval_run(args)
+    if args.command == "job" and args.job_command == "status":
+        return _handle_job_status(args)
+    if args.command == "job" and args.job_command == "log":
+        return _handle_job_log(args)
     if args.command == "ui":
         return serve_fastapi(index_dir=args.index_dir, host=args.host, port=args.port, reload=False)
     if args.command == "serve":

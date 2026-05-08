@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 from unittest import TestCase
@@ -159,4 +159,3 @@ class WebToolTests(TestCase):
 
         self.assertEqual(calls, ["http://127.0.0.1/admin"])
         self.assertEqual(payload["url"], "http://127.0.0.1/admin")
-

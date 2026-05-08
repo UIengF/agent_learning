@@ -4,7 +4,16 @@ import json
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import Callable, Any
-from urllib.parse import parse_qs, quote_plus, urlencode, unquote, urljoin, urlparse, urlsplit, urlunsplit
+from urllib.parse import (
+    parse_qs,
+    quote_plus,
+    urlencode,
+    unquote,
+    urljoin,
+    urlparse,
+    urlsplit,
+    urlunsplit,
+)
 from urllib.request import Request, urlopen
 
 from .web_types import SearchHit
@@ -27,7 +36,13 @@ _QUERY_ENTITY_DOMAIN_HINTS = {
     "openai": ("openai.com", "openai.github.io", "platform.openai.com", "developers.openai.com"),
     "anthropic": ("anthropic.com", "docs.anthropic.com"),
     "gemini": ("google.com", "ai.google.dev", "google.github.io", "deepmind.google"),
-    "google": ("google.com", "ai.google.dev", "cloud.google.com", "google.github.io", "deepmind.google"),
+    "google": (
+        "google.com",
+        "ai.google.dev",
+        "cloud.google.com",
+        "google.github.io",
+        "deepmind.google",
+    ),
 }
 _QUERY_ENTITY_GITHUB_HINTS = {
     "openai": ("openai",),
@@ -274,7 +289,9 @@ def merge_ranked_hits(hits: list[SearchHit], *, top_k: int, query: str = "") -> 
         if existing is None or candidate_key > existing[0]:
             best_by_url[normalized_url] = (candidate_key, hit)
 
-    merged = [item[1] for item in sorted(best_by_url.values(), key=lambda item: item[0], reverse=True)]
+    merged = [
+        item[1] for item in sorted(best_by_url.values(), key=lambda item: item[0], reverse=True)
+    ]
     return [
         SearchHit(
             title=hit.title,
@@ -477,7 +494,9 @@ def _preferred_github_owners_for_query(query: str) -> tuple[str, ...]:
 
 
 def _is_official_url(url: str, *, query: str) -> bool:
-    return _official_domain_boost(url, query=query) > 0 or _official_github_boost(url, query=query) > 0
+    return (
+        _official_domain_boost(url, query=query) > 0 or _official_github_boost(url, query=query) > 0
+    )
 
 
 def _doc_path_boost(url: str) -> int:
@@ -517,7 +536,10 @@ def _low_quality_penalty(hit: SearchHit, *, query: str) -> int:
     if any(hint in lowered_title or hint in lowered_snippet for hint in _MARKETING_TITLE_HINTS):
         penalty -= 1
 
-    if _official_domain_boost(hit.url, query=query) > 0 or _official_github_boost(hit.url, query=query) > 0:
+    if (
+        _official_domain_boost(hit.url, query=query) > 0
+        or _official_github_boost(hit.url, query=query) > 0
+    ):
         return penalty
 
     if penalty < 0 and _third_party_quality_boost(hit.url) > 0:

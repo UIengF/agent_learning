@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, PrivateAttr
 try:
     from langchain_core.tools import BaseTool
 except ImportError:  # pragma: no cover - keep imports usable without runtime deps
+
     class BaseTool:  # type: ignore[override]
         args_schema: Type[BaseModel] = BaseModel
 
@@ -39,9 +40,7 @@ class ScholarSearchInput(BaseModel):
 
 class ScholarSearchTool(BaseTool):
     name: str = "scholar_search"
-    description: str = (
-        "Search Google Scholar papers from a topic, expanding the topic into academic keywords first."
-    )
+    description: str = "Search Google Scholar papers from a topic, expanding the topic into academic keywords first."
     args_schema: Type[BaseModel] = ScholarSearchInput
 
     _searcher: Any = PrivateAttr()

@@ -88,7 +88,9 @@ def build_user_memory(
         elif "english" in lowered or "英文" in content:
             preferred_language = "en"
 
-        if any(token in content for token in ("简洁", "简短")) or any(token in lowered for token in ("concise", "brief")):
+        if any(token in content for token in ("简洁", "简短")) or any(
+            token in lowered for token in ("concise", "brief")
+        ):
             answer_style = "concise"
         elif "结构化" in content or "structured" in lowered:
             answer_style = "structured"
@@ -128,12 +130,18 @@ def merge_user_memory(existing: UserMemory, observed: UserMemory) -> UserMemory:
         preferred_language=observed.preferred_language or existing.preferred_language,
         answer_style=observed.answer_style or existing.answer_style,
         preferred_index_dir=observed.preferred_index_dir or existing.preferred_index_dir,
-        stable_constraints=_dedupe(list(existing.stable_constraints) + list(observed.stable_constraints)),
-        recurring_topics=_dedupe(list(existing.recurring_topics) + list(observed.recurring_topics))[:5],
+        stable_constraints=_dedupe(
+            list(existing.stable_constraints) + list(observed.stable_constraints)
+        ),
+        recurring_topics=_dedupe(list(existing.recurring_topics) + list(observed.recurring_topics))[
+            :5
+        ],
     )
 
 
-def format_user_memory(memory: UserMemory, *, shorten: Callable[[str, int], str], max_chars: int) -> str | None:
+def format_user_memory(
+    memory: UserMemory, *, shorten: Callable[[str, int], str], max_chars: int
+) -> str | None:
     if not any(
         (
             memory.preferred_language,

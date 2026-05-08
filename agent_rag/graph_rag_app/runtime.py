@@ -12,6 +12,12 @@ except ImportError:  # pragma: no cover - import fallback for lightweight tests
 
 from .agent import HumanMessage, build_agent
 from .config import DEFAULT_SESSION_ID, AppConfig, build_app_config
+from .langsmith_runtime import (
+    build_langsmith_run_name,
+    build_langsmith_tags,
+    langsmith_run_context,
+)
+from .structured_trace import StructuredTraceWriter
 from .user_memory import build_user_memory, merge_user_memory, save_user_memory
 
 
@@ -20,6 +26,7 @@ class AgentRunTrace:
     answer: str
     messages: list[Any]
     source_messages: list[Any] | None = None
+    langsmith_run_id: str | None = None
 
 
 def build_sqlite_checkpointer(db_path: str | Path) -> Any | None:
@@ -54,6 +61,23 @@ def shorten_text(text: str, max_len: int = 600) -> str:
 
 def get_thread_config(session_id: str) -> dict[str, dict[str, str]]:
     return {"configurable": {"thread_id": session_id}}
+
+
+def append_agent_trace(agent: Any, event_type: str, payload: dict[str, Any]) -> None:
+    trace = getattr(agent, "_trace", None)
+    if callable(trace):
+        trace(event_type, payload)
+
+
+def build_structured_trace_writer(config: AppConfig, session_id: str) -> StructuredTraceWriter:
+    safe_session = "".join(
+        char if char.isalnum() or char in {"-", "_"} else "-" for char in session_id
+    ).strip("-")
+    trace_name = safe_session or DEFAULT_SESSION_ID
+    return StructuredTraceWriter(
+        Path(config.harness.structured_trace_dir) / f"{trace_name}.jsonl",
+        enabled=config.harness.structured_trace_enabled,
+    )
 
 
 def get_graph_state(graph: Any, config: dict[str, Any]) -> Any | None:
@@ -149,6 +173,7 @@ def run_or_resume_with_trace(
     interrupt_after: list[str] | None = None,
     *,
     app_config: AppConfig | None = None,
+    run_metadata: dict[str, Any] | None = None,
 ) -> AgentRunTrace:
     if HumanMessage is None:
         raise ImportError("Missing runtime dependencies for LangGraph execution.")
@@ -166,52 +191,82 @@ def run_or_resume_with_trace(
         ensure_log_file=ensure_log_file,
         append_log=append_log,
         shorten_text=shorten_text,
+        trace_writer=build_structured_trace_writer(config_obj, session_id),
     )
     ensure_log_file(agent.log_path)
     config = get_thread_config(session_id)
     state = get_graph_state(agent.graph, config)
     prior_message_count = len(extract_messages_from_state(state))
     next_nodes = tuple(getattr(state, "next", ()) or ())
+    base_metadata = {
+        "session_id": session_id,
+        "index_dir": str(Path(index_dir).resolve()),
+        "resume": bool(resume),
+    }
+    if run_metadata:
+        base_metadata.update(run_metadata)
+    explicit_tags = run_metadata.get("tags") if isinstance(run_metadata, dict) else None
+    if not isinstance(explicit_tags, list):
+        explicit_tags = None
+    run_name = build_langsmith_run_name(
+        "graph_rag.resume" if resume else "graph_rag.ask",
+        base_metadata,
+    )
+    tags = build_langsmith_tags(base_metadata, explicit_tags)
 
-    if resume:
-        if not next_nodes:
-            raise RuntimeError(f"No resumable checkpoint found for session '{session_id}'.")
-        append_log(
-            agent.log_path,
-            "===== Resume Session =====\n"
-            f"session_id: {session_id}\n"
-            f"pending_nodes: {', '.join(next_nodes)}",
-        )
-        result = run_graph_stream(
-            agent.graph,
-            None,
-            config=config,
-            interrupt_after=interrupt_after,
-        )
-    else:
-        append_log(
-            agent.log_path,
-            "===== Session Start =====\n"
-            f"session_id: {session_id}\n"
-            f"index_dir:\n{Path(index_dir).resolve()}\n\n"
-            f"user_question:\n{question}\n\n"
-            f"system_prompt:\n{agent.system}",
-        )
-        initial_state = {"messages": [HumanMessage(content=question)]}
-        if interrupt_after:
+    with langsmith_run_context(
+        config=config_obj.langsmith,
+        run_name=run_name,
+        metadata=base_metadata,
+        inputs={
+            "question": question,
+            "index_dir": str(index_dir),
+            "session_id": session_id,
+            "resume": bool(resume),
+        },
+        tags=tags,
+    ) as langsmith_run:
+        if resume:
+            if not next_nodes:
+                raise RuntimeError(f"No resumable checkpoint found for session '{session_id}'.")
+            append_log(
+                agent.log_path,
+                "===== Resume Session =====\n"
+                f"session_id: {session_id}\n"
+                f"pending_nodes: {', '.join(next_nodes)}",
+            )
             result = run_graph_stream(
                 agent.graph,
-                initial_state,
+                None,
                 config=config,
                 interrupt_after=interrupt_after,
             )
         else:
-            result = run_graph_invoke(agent.graph, initial_state, config=config)
+            append_log(
+                agent.log_path,
+                "===== Session Start =====\n"
+                f"session_id: {session_id}\n"
+                f"index_dir:\n{Path(index_dir).resolve()}\n\n"
+                f"user_question:\n{question}\n\n"
+                f"system_prompt:\n{agent.system}",
+            )
+            initial_state = {"messages": [HumanMessage(content=question)]}
+            if interrupt_after:
+                result = run_graph_stream(
+                    agent.graph,
+                    initial_state,
+                    config=config,
+                    interrupt_after=interrupt_after,
+                )
+            else:
+                result = run_graph_invoke(agent.graph, initial_state, config=config)
 
     post_state = get_graph_state(agent.graph, config)
     post_next_nodes = tuple(getattr(post_state, "next", ()) or ())
     final_answer = extract_final_answer(result, post_state, agent._message_content)
-    persisted_messages = extract_messages_from_state(post_state) or extract_messages_from_result(result)
+    persisted_messages = extract_messages_from_state(post_state) or extract_messages_from_result(
+        result
+    )
     source_messages = list(persisted_messages[prior_message_count:])
     observed_memory = build_user_memory(
         list(persisted_messages),
@@ -232,20 +287,40 @@ def run_or_resume_with_trace(
             f"pending_nodes: {', '.join(post_next_nodes)}\n"
             "resume_hint: call the same entrypoint with the same session_id and --resume",
         )
+        append_agent_trace(
+            agent,
+            "checkpoint_saved",
+            {
+                "session_id": session_id,
+                "pending_nodes": list(post_next_nodes),
+                "source_message_count": len(source_messages),
+            },
+        )
         return AgentRunTrace(
             answer=final_answer or f"[checkpoint saved] resume with session_id={session_id}",
             messages=list(persisted_messages),
             source_messages=source_messages,
+            langsmith_run_id=str(getattr(langsmith_run, "id", "")) or None,
         )
 
     if final_answer is None:
         raise RuntimeError("Graph execution completed without any messages.")
 
     append_log(agent.log_path, f"===== Final Answer =====\n{final_answer}")
+    append_agent_trace(
+        agent,
+        "final_answer",
+        {
+            "session_id": session_id,
+            "answer_preview": shorten_text(final_answer, 1000),
+            "source_message_count": len(source_messages),
+        },
+    )
     return AgentRunTrace(
         answer=final_answer,
         messages=list(persisted_messages),
         source_messages=source_messages,
+        langsmith_run_id=str(getattr(langsmith_run, "id", "")) or None,
     )
 
 
@@ -258,6 +333,7 @@ def run_or_resume(
     interrupt_after: list[str] | None = None,
     *,
     app_config: AppConfig | None = None,
+    run_metadata: dict[str, Any] | None = None,
 ) -> str:
     trace = run_or_resume_with_trace(
         question=question,
@@ -267,6 +343,7 @@ def run_or_resume(
         resume=resume,
         interrupt_after=interrupt_after,
         app_config=app_config,
+        run_metadata=run_metadata,
     )
     return trace.answer
 

@@ -157,6 +157,43 @@ class GenerationConfig:
 
 
 @dataclass(frozen=True)
+class EvalJudgeConfig:
+    enabled: bool = False
+    api_key: str = ""
+    api_base: str = DEFAULT_API_BASE
+    model_name: str = DEFAULT_MODEL_NAME
+
+
+@dataclass(frozen=True)
+class LangSmithConfig:
+    enabled: bool = False
+    tracing_v2: bool = False
+    api_key: str = ""
+    project_name: str = "agent-rag"
+    endpoint: str = ""
+
+
+@dataclass(frozen=True)
+class HarnessConfig:
+    skills_dir: str = "skills"
+    structured_trace_enabled: bool = True
+    structured_trace_dir: str = "runtime/traces"
+
+
+@dataclass(frozen=True)
+class PermissionConfig:
+    allowed_index_roots: str = "."
+    allow_local_web_fetch: bool = True
+    allow_private_web_fetch: bool = True
+
+
+@dataclass(frozen=True)
+class JobConfig:
+    runtime_dir: str = "runtime/jobs"
+    max_log_chars: int = 12000
+
+
+@dataclass(frozen=True)
 class RuntimeConfig:
     session_id: str = DEFAULT_SESSION_ID
     checkpoint_db: str = DEFAULT_CHECKPOINT_DB
@@ -177,6 +214,11 @@ class AppConfig:
     runtime: RuntimeConfig
     scholar: ScholarConfig = field(default_factory=ScholarConfig)
     context: ContextConfig = field(default_factory=ContextConfig)
+    eval_judge: EvalJudgeConfig = field(default_factory=EvalJudgeConfig)
+    langsmith: LangSmithConfig = field(default_factory=LangSmithConfig)
+    harness: HarnessConfig = field(default_factory=HarnessConfig)
+    permissions: PermissionConfig = field(default_factory=PermissionConfig)
+    jobs: JobConfig = field(default_factory=JobConfig)
 
 
 def build_app_config(
@@ -190,9 +232,18 @@ def build_app_config(
     load_env_file()
     web_defaults = WebConfig()
     scholar_defaults = ScholarConfig()
+    eval_defaults = EvalJudgeConfig()
+    langsmith_defaults = LangSmithConfig()
+    harness_defaults = HarnessConfig()
+    permission_defaults = PermissionConfig()
+    job_defaults = JobConfig()
     return AppConfig(
         kb_path=Path(kb_path),
-        model=ModelConfig(api_key=os.getenv("DASHSCOPE_API_KEY", "")),
+        model=ModelConfig(
+            api_key=os.getenv("RAG_MODEL_API_KEY", os.getenv("DASHSCOPE_API_KEY", "")),
+            api_base=os.getenv("RAG_MODEL_API_BASE", DEFAULT_API_BASE),
+            model_name=os.getenv("RAG_MODEL_NAME", DEFAULT_MODEL_NAME),
+        ),
         embedding=EmbeddingConfig(
             model=os.getenv("DASHSCOPE_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL),
             max_batch_size=_parse_int(
@@ -302,6 +353,59 @@ def build_app_config(
             allow_query_decomposition=parse_bool_env(
                 "RAG_ALLOW_QUERY_DECOMPOSITION",
                 GenerationConfig().allow_query_decomposition,
+            ),
+        ),
+        eval_judge=EvalJudgeConfig(
+            enabled=parse_bool_env("RAG_EVAL_JUDGE_ENABLED", eval_defaults.enabled),
+            api_key=os.getenv(
+                "RAG_EVAL_JUDGE_API_KEY",
+                os.getenv("RAG_MODEL_API_KEY", os.getenv("DASHSCOPE_API_KEY", "")),
+            ),
+            api_base=os.getenv(
+                "RAG_EVAL_JUDGE_API_BASE",
+                os.getenv("RAG_MODEL_API_BASE", DEFAULT_API_BASE),
+            ),
+            model_name=os.getenv(
+                "RAG_EVAL_JUDGE_MODEL",
+                os.getenv("RAG_MODEL_NAME", DEFAULT_MODEL_NAME),
+            ),
+        ),
+        langsmith=LangSmithConfig(
+            enabled=parse_bool_env("RAG_LANGSMITH_ENABLED", langsmith_defaults.enabled),
+            tracing_v2=parse_bool_env("LANGCHAIN_TRACING_V2", langsmith_defaults.tracing_v2),
+            api_key=os.getenv("LANGCHAIN_API_KEY", langsmith_defaults.api_key),
+            project_name=os.getenv("LANGCHAIN_PROJECT", langsmith_defaults.project_name),
+            endpoint=os.getenv("LANGCHAIN_ENDPOINT", langsmith_defaults.endpoint),
+        ),
+        harness=HarnessConfig(
+            skills_dir=os.getenv("RAG_SKILLS_DIR", harness_defaults.skills_dir),
+            structured_trace_enabled=parse_bool_env(
+                "RAG_STRUCTURED_TRACE_ENABLED",
+                harness_defaults.structured_trace_enabled,
+            ),
+            structured_trace_dir=os.getenv(
+                "RAG_STRUCTURED_TRACE_DIR",
+                harness_defaults.structured_trace_dir,
+            ),
+        ),
+        permissions=PermissionConfig(
+            allowed_index_roots=os.getenv(
+                "RAG_ALLOWED_INDEX_ROOTS",
+                permission_defaults.allowed_index_roots,
+            ),
+            allow_local_web_fetch=parse_bool_env(
+                "RAG_ALLOW_LOCAL_WEB_FETCH",
+                permission_defaults.allow_local_web_fetch,
+            ),
+            allow_private_web_fetch=parse_bool_env(
+                "RAG_ALLOW_PRIVATE_WEB_FETCH",
+                permission_defaults.allow_private_web_fetch,
+            ),
+        ),
+        jobs=JobConfig(
+            runtime_dir=os.getenv("RAG_JOB_RUNTIME_DIR", job_defaults.runtime_dir),
+            max_log_chars=_parse_int(
+                os.getenv("RAG_JOB_MAX_LOG_CHARS"), job_defaults.max_log_chars
             ),
         ),
         runtime=RuntimeConfig(

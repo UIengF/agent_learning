@@ -163,7 +163,9 @@ def plan_scholar_queries(topic: str, *, planner: Any | None, max_queries: int = 
     return deduped or [normalized_topic]
 
 
-def parse_scholar_organic_results(payload: dict[str, Any], *, source_query: str) -> list[ScholarHit]:
+def parse_scholar_organic_results(
+    payload: dict[str, Any], *, source_query: str
+) -> list[ScholarHit]:
     organic_results = payload.get("organic_results", [])
     if not isinstance(organic_results, list):
         return []

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Type
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, PrivateAttr
 
@@ -13,11 +15,16 @@ from .context_builder import ContextBuildResult, build_context_messages
 from .context_metrics import format_context_metrics
 from .evidence_cache import build_evidence_cache, format_evidence_cache, lookup_cached_tool_result
 from .indexing import load_index
+from .permissions import build_permission_policy
 from .question_frame import QuestionFrame, build_question_frame, format_question_frame
+from .research_plan import ResearchPlanTool, format_research_plan, latest_research_plan
 from .retrieval import Retriever, normalize_search_result
 from .scholar_search import build_scholar_search_service
 from .session_summary import build_session_summary, format_session_summary
 from .scholar_tools import ScholarSearchTool
+from .skills import LoadSkillTool, SkillRegistry
+from .sources import extract_sources_from_messages
+from .structured_trace import StructuredTraceWriter
 from .task_state import build_task_state, format_task_state
 from .token_estimation import HeuristicTokenEstimator, select_token_estimator
 from .user_memory import UserMemory, format_user_memory, load_user_memory
@@ -98,6 +105,7 @@ If multiple answers, dates, or scenarios are plausible, explain that clearly.
 
 
 if LANGGRAPH_AVAILABLE:
+
     class AgentState(TypedDict):
         messages: Annotated[list[AnyMessage], operator.add]
 else:
@@ -106,7 +114,9 @@ else:
 
 class LocalRAGInput(BaseModel):
     query: str = Field(..., description="Query used to search the local knowledge base.")
-    top_k: int = Field(DEFAULT_TOP_K, ge=1, le=8, description="Number of relevant passages to return.")
+    top_k: int = Field(
+        DEFAULT_TOP_K, ge=1, le=8, description="Number of relevant passages to return."
+    )
 
 
 class LocalRAGRetrieveTool(BaseTool):
@@ -152,6 +162,7 @@ class ReflectionRecord:
     latest_tool_result_count: int | None
     cached_web_queries: tuple[str, ...]
     cached_fetched_urls: tuple[str, ...]
+    failed_web_fetch_domains: tuple[str, ...]
     llm_decision: str
     tool_calls: tuple[dict[str, Any], ...]
 
@@ -188,6 +199,8 @@ class Agent:
         live_messages_max_search_results: int = 3,
         user_memory: UserMemory | None = None,
         token_estimator: HeuristicTokenEstimator | None = None,
+        skill_registry: SkillRegistry | None = None,
+        trace_writer: StructuredTraceWriter | None = None,
     ):
         self.system = system
         self.log_path = log_path or Path("runtime") / "logs" / "graph_rag.log"
@@ -213,6 +226,8 @@ class Agent:
         self.live_messages_max_search_results = max(1, int(live_messages_max_search_results))
         self.user_memory = user_memory or UserMemory()
         self.token_estimator = token_estimator or HeuristicTokenEstimator()
+        self.skill_registry = skill_registry
+        self.trace_writer = trace_writer
         self.tools = {tool.name: tool for tool in (tools or [])}
         self.base_model = model
         self.graph = None
@@ -263,6 +278,10 @@ class Agent:
 
     def _append_json(self, title: str, payload: dict[str, Any]) -> None:
         self._append(f"{title}\n{json.dumps(payload, ensure_ascii=False, sort_keys=True)}")
+
+    def _trace(self, event_type: str, payload: dict[str, Any]) -> None:
+        if self.trace_writer is not None:
+            self.trace_writer.append(event_type, payload)
 
     def _shorten(self, text: str, max_len: int) -> str:
         if self._shorten_text is None:
@@ -331,7 +350,9 @@ class Agent:
             return messages[:tail_start], tail
         return messages[1:tail_start], [anchor] + tail
 
-    def _split_message_turns(self, messages: list[AnyMessage | dict]) -> list[list[AnyMessage | dict]]:
+    def _split_message_turns(
+        self, messages: list[AnyMessage | dict]
+    ) -> list[list[AnyMessage | dict]]:
         if not messages:
             return []
 
@@ -454,6 +475,7 @@ class Agent:
         trigger_message: Any,
         limit_message: str,
         completed_rounds: int,
+        scholar_title_guardrail: str | None = None,
     ) -> Any:
         final_instruction = (
             f"{limit_message}\n\n"
@@ -461,6 +483,8 @@ class Agent:
             "already present in the conversation. If the evidence is incomplete, state the "
             "uncertainty clearly."
         )
+        if scholar_title_guardrail:
+            final_instruction = final_instruction + "\n\n" + scholar_title_guardrail
         final_messages = list(messages)
         if HumanMessage is not None:
             final_messages.append(HumanMessage(content=final_instruction))
@@ -535,6 +559,43 @@ class Agent:
                 failed_urls.add(url)
         return failed_urls
 
+    @staticmethod
+    def _url_domain(url: str) -> str:
+        try:
+            parsed = urlparse(url)
+        except Exception:
+            return ""
+        return (parsed.netloc or "").lower()
+
+    def _failed_web_fetch_domains(self, state: AgentState) -> list[str]:
+        domains: list[str] = []
+        for url in sorted(self._failed_web_fetch_urls(state)):
+            domain = self._url_domain(url)
+            if domain and domain not in domains:
+                domains.append(domain)
+        return domains
+
+    def _format_fetch_failure_guidance(self, state: AgentState) -> str | None:
+        failed_domains = self._failed_web_fetch_domains(state)
+        if not failed_domains:
+            return None
+
+        lines = [
+            "Fetch failure guidance:",
+            "failed_fetch_domains: " + ", ".join(failed_domains),
+            (
+                "If evidence is still missing, broaden the next web_search to official or primary "
+                "sources from the same organization or adjacent documentation ecosystem."
+            ),
+            "Do not keep searching only within a domain whose pages failed to fetch.",
+        ]
+        for domain in failed_domains:
+            lines.append(
+                f"avoid repeating site:{domain} unless the user explicitly requires that domain"
+            )
+        lines.append("Keep the target entities and focus terms in the query.")
+        return "\n".join(lines)
+
     def _official_search_urls(self, state: AgentState) -> list[str]:
         for message in reversed(self._current_call_messages(state)):
             if not self._is_tool_message(message):
@@ -566,11 +627,53 @@ class Agent:
             return urls
         return []
 
+    def _ranked_web_search_urls(self, state: AgentState) -> list[str]:
+        ranked: list[tuple[int, int, int, str]] = []
+        seen: set[str] = set()
+        for search_order, message in enumerate(reversed(self._current_call_messages(state))):
+            if not self._is_tool_message(message):
+                continue
+            if self._tool_name(message) != "web_search":
+                continue
+
+            payload = self._parse_tool_payload(self._message_content(message))
+            results = payload.get("results", [])
+            if not isinstance(results, list):
+                continue
+
+            for index, result in enumerate(results):
+                if not isinstance(result, dict):
+                    continue
+                url = str(result.get("url", "")).strip()
+                if not url or url in seen:
+                    continue
+                seen.add(url)
+                try:
+                    rank = int(result.get("rank", index + 1))
+                except (TypeError, ValueError):
+                    rank = index + 1
+                official_priority = 0 if result.get("is_official") else 1
+                ranked.append((official_priority, search_order, rank, url))
+
+        ranked.sort(key=lambda item: (item[0], item[1], item[2]))
+        return [url for _, _, _, url in ranked]
+
+    def _web_fetch_fallback_urls(self, state: AgentState, original_url: str) -> list[str]:
+        failed_urls = self._failed_web_fetch_urls(state) | {original_url}
+        urls: list[str] = []
+        for url in self._ranked_web_search_urls(state):
+            if url in failed_urls or url in urls:
+                continue
+            urls.append(url)
+        return urls
+
     def _latest_tool_snapshot(self, state: AgentState) -> tuple[str, dict[str, Any]]:
         for message in reversed(self._current_call_messages(state)):
             if not self._is_tool_message(message):
                 continue
-            return self._tool_name(message), self._parse_tool_payload(self._message_content(message))
+            return self._tool_name(message), self._parse_tool_payload(
+                self._message_content(message)
+            )
         return "", {}
 
     def _build_reflection_record(
@@ -606,6 +709,7 @@ class Agent:
             latest_tool_result_count=latest_tool_result_count,
             cached_web_queries=tuple(sorted(evidence_cache.web_results_by_query.keys())),
             cached_fetched_urls=tuple(sorted(evidence_cache.fetched_pages_by_url.keys())),
+            failed_web_fetch_domains=tuple(self._failed_web_fetch_domains(state)),
             llm_decision=llm_decision,
             tool_calls=serialized_calls,
         )
@@ -669,6 +773,71 @@ class Agent:
         )
         return self._replace_tool_calls(message, updated_tool_calls), updated_tool_calls
 
+    def _current_question(self, state: AgentState) -> str:
+        question = ""
+        for message in self._current_call_messages(state):
+            if self._is_human_message(message):
+                content = self._message_content(message).strip()
+                if content:
+                    question = content
+        return question
+
+    @staticmethod
+    def _remove_site_filter(query: str, domain: str) -> str:
+        pattern = re.compile(rf"(?i)\bsite:{re.escape(domain)}\b")
+        updated = pattern.sub(" ", query)
+        updated = re.sub(r"\s+", " ", updated).strip()
+        updated = re.sub(r"(?i)^(OR|AND)\s+", "", updated).strip()
+        updated = re.sub(r"(?i)\s+(OR|AND)$", "", updated).strip()
+        return updated
+
+    def _apply_failed_domain_search_policy(
+        self,
+        state: AgentState,
+        message: Any,
+        tool_calls: list[dict[str, Any]],
+    ) -> tuple[Any, list[dict[str, Any]]]:
+        failed_domains = self._failed_web_fetch_domains(state)
+        if not failed_domains:
+            return message, tool_calls
+
+        question = self._current_question(state).lower()
+        updated_tool_calls: list[dict[str, Any]] = []
+        changed = False
+        for tool_call in tool_calls:
+            copied_call = dict(tool_call)
+            copied_args = dict(tool_call.get("args", {}))
+            copied_call["args"] = copied_args
+            updated_tool_calls.append(copied_call)
+
+            if copied_call.get("name") != "web_search":
+                continue
+            query = str(copied_args.get("query", "")).strip()
+            if not query:
+                continue
+            updated_query = query
+            removed_domains: list[str] = []
+            for domain in failed_domains:
+                if domain.lower() in question:
+                    continue
+                next_query = self._remove_site_filter(updated_query, domain)
+                if next_query != updated_query:
+                    updated_query = next_query
+                    removed_domains.append(domain)
+            if removed_domains and updated_query:
+                copied_args["query"] = updated_query
+                changed = True
+                self._append(
+                    "Failed-domain search policy\n"
+                    f"Removed site filters for failed fetch domains: {', '.join(removed_domains)}\n"
+                    f"Original query: {query}\n"
+                    f"Updated query: {updated_query}"
+                )
+
+        if not changed:
+            return message, tool_calls
+        return self._replace_tool_calls(message, updated_tool_calls), updated_tool_calls
+
     def exists_action(self, state: AgentState):
         result = state["messages"][-1]
         return len(getattr(result, "tool_calls", [])) > 0
@@ -685,6 +854,28 @@ class Agent:
                 content = str(getattr(message, "content", ""))
             result_blocks.append(f"Tool result {index} ({name}):\n{content}")
         return REFLECTION_PROMPT_TEMPLATE + "\n\n" + "\n\n".join(result_blocks)
+
+    def _format_scholar_title_guardrail(self, messages: list[AnyMessage | dict]) -> str | None:
+        sources = extract_sources_from_messages(messages)
+        scholar_titles: list[str] = []
+        for source in sources:
+            if str(source.get("source_type", "") or "") != "scholar":
+                continue
+            title = str(source.get("title", "") or "").strip()
+            if title:
+                scholar_titles.append(title)
+
+        if not scholar_titles:
+            return None
+
+        lines = [
+            "Scholar title guardrail:",
+            "Only cite or discuss papers whose titles appear in the final source list below.",
+            "If a paper is not in this list, do not mention it by title, author, venue, or year.",
+            "Allowed paper titles:",
+        ]
+        lines.extend(f"- {title}" for title in scholar_titles)
+        return "\n".join(lines)
 
     def build_context_result(self, state: AgentState) -> ContextBuildResult:
         trimmed_messages, base_messages = self._select_recent_turns(list(state["messages"]))
@@ -716,6 +907,10 @@ class Agent:
             question_frame_text = format_question_frame(question_frame)
 
         evidence_cache_text = format_evidence_cache(evidence_cache)
+        skill_inventory_text = (
+            self.skill_registry.format_inventory() if self.skill_registry is not None else None
+        )
+        research_plan_text = format_research_plan(latest_research_plan(list(state["messages"])))
 
         task_state = self._build_task_state(base_messages)
         task_state_text = None
@@ -729,6 +924,12 @@ class Agent:
         if tool_results:
             tool_results.reverse()
             reflection_text = self.build_reflection_prompt(tool_results)
+            fetch_failure_guidance = self._format_fetch_failure_guidance(state)
+            if fetch_failure_guidance:
+                reflection_text = reflection_text + "\n\n" + fetch_failure_guidance
+            scholar_title_guardrail = self._format_scholar_title_guardrail(list(state["messages"]))
+            if scholar_title_guardrail:
+                reflection_text = reflection_text + "\n\n" + scholar_title_guardrail
 
         return build_context_messages(
             base_messages=base_messages,
@@ -736,7 +937,9 @@ class Agent:
             summary_text=summary_text,
             question_frame_text=question_frame_text,
             user_memory_text=user_memory_text,
+            skill_inventory_text=skill_inventory_text,
             evidence_cache_text=evidence_cache_text,
+            research_plan_text=research_plan_text,
             task_state_text=task_state_text,
             reflection_text=reflection_text,
             budget=ContextBudget(
@@ -764,10 +967,14 @@ class Agent:
 
         last_message = state["messages"][-1]
         if ToolMessage is not None and isinstance(last_message, ToolMessage):
-            self._append("Reflection step\nThe model will decide whether to continue using tools or answer directly.")
             self._append(
-                f"Reflection prompt\n{self._shorten(self.build_reflection_prompt([last_message]), 1200)}"
+                "Reflection step\nThe model will decide whether to continue using tools or answer directly."
             )
+            reflection_log_prompt = self.build_reflection_prompt([last_message])
+            fetch_failure_guidance = self._format_fetch_failure_guidance(state)
+            if fetch_failure_guidance:
+                reflection_log_prompt = reflection_log_prompt + "\n\n" + fetch_failure_guidance
+            self._append(f"Reflection prompt\n{self._shorten(reflection_log_prompt, 1200)}")
             self.current_round += 1
 
         context_result = self.build_context_result(state)
@@ -782,6 +989,16 @@ class Agent:
 
         if context_result.metrics is not None:
             self._append(format_context_metrics(context_result.metrics))
+            self._trace(
+                "context_built",
+                {
+                    "model_call_count": self.model_call_count,
+                    "layer_names": [layer.name for layer in context_result.layers],
+                    "dropped_layer_names": [layer.name for layer in context_result.dropped_layers],
+                    "estimated_total_chars": context_result.estimated_total_chars,
+                    "estimated_total_tokens": context_result.estimated_total_tokens,
+                },
+            )
         self._append(f"LLM input source: {role}\nLLM input content:\n{content}")
         message = self.model.invoke(messages)
         response_text = self._message_content(message)
@@ -806,15 +1023,34 @@ class Agent:
                         trigger_message=message,
                         limit_message=limited_content,
                         completed_rounds=completed_rounds,
+                        scholar_title_guardrail=self._format_scholar_title_guardrail(
+                            list(state["messages"])
+                        ),
                     )
                 ]
             }
 
         if tool_calls:
-            message, tool_calls = self._apply_official_first_fetch_policy(state, message, tool_calls)
+            message, tool_calls = self._apply_failed_domain_search_policy(
+                state, message, tool_calls
+            )
+            message, tool_calls = self._apply_official_first_fetch_policy(
+                state, message, tool_calls
+            )
 
         if tool_calls:
             self._log_reflection_record(state, llm_decision="tool_use", tool_calls=tool_calls)
+            self._trace(
+                "llm_decision",
+                {
+                    "decision": "tool_use",
+                    "model_call_count": self.model_call_count,
+                    "tool_calls": [
+                        {"name": call.get("name", ""), "args": dict(call.get("args", {}))}
+                        for call in tool_calls
+                    ],
+                },
+            )
             first_query = tool_calls[0].get("args", {}).get("query", "")
             self._append(
                 "LLM decision: continue with tool use.\n"
@@ -823,6 +1059,14 @@ class Agent:
             )
         else:
             self._log_reflection_record(state, llm_decision="answer", tool_calls=[])
+            self._trace(
+                "llm_decision",
+                {
+                    "decision": "answer",
+                    "model_call_count": self.model_call_count,
+                    "answer_preview": self._shorten(response_text, 500),
+                },
+            )
             self._append(
                 "LLM decision: answer directly.\n"
                 f"Output summary:\n{self._shorten(response_text, 800)}"
@@ -839,6 +1083,14 @@ class Agent:
             tool_args = tool_call.get("args", {})
             serialized_args = json.dumps(tool_args, ensure_ascii=False, sort_keys=True)
             self._append(f"Tool call\nName: {tool_call['name']}\nArgs: {serialized_args}")
+            self._trace(
+                "tool_call",
+                {
+                    "tool_call_count": self.tool_call_count,
+                    "name": tool_call["name"],
+                    "args": tool_args,
+                },
+            )
             cached_result = lookup_cached_tool_result(
                 evidence_cache,
                 tool_name=tool_call["name"],
@@ -846,6 +1098,14 @@ class Agent:
             )
             if cached_result is not None:
                 self._append(f"Tool cache hit\nName: {tool_call['name']}")
+                self._trace(
+                    "tool_cache_hit",
+                    {
+                        "tool_call_count": self.tool_call_count,
+                        "name": tool_call["name"],
+                        "args": tool_args,
+                    },
+                )
                 result = cached_result
             elif tool_call["name"] not in self.tools:
                 result = json.dumps(
@@ -870,9 +1130,47 @@ class Agent:
                         },
                         ensure_ascii=False,
                     )
+                    if tool_call["name"] == "web_fetch":
+                        original_url = str(tool_args.get("url", "")).strip()
+                        for fallback_url in self._web_fetch_fallback_urls(state, original_url):
+                            fallback_args = dict(tool_args)
+                            fallback_args["url"] = fallback_url
+                            cached_fallback = lookup_cached_tool_result(
+                                evidence_cache,
+                                tool_name="web_fetch",
+                                tool_args=fallback_args,
+                            )
+                            self._append(
+                                "Web fetch fallback\n"
+                                f"Original URL failed: {original_url}\n"
+                                f"Trying fallback URL: {fallback_url}"
+                            )
+                            if cached_fallback is not None:
+                                self._append("Tool cache hit\nName: web_fetch")
+                                result = cached_fallback
+                                break
+                            try:
+                                result = self.tools["web_fetch"].invoke(fallback_args)
+                                break
+                            except Exception as fallback_exc:
+                                self._append(
+                                    "Web fetch fallback failed\n"
+                                    f"URL: {fallback_url}\n"
+                                    f"{fallback_exc.__class__.__name__}: {fallback_exc}"
+                                )
             self._append(f"Tool result\n{str(result)}")
+            self._trace(
+                "tool_result",
+                {
+                    "tool_call_count": self.tool_call_count,
+                    "name": tool_call["name"],
+                    "result_preview": self._shorten(str(result), 800),
+                },
+            )
             results.append(
-                ToolMessage(tool_call_id=tool_call["id"], name=tool_call["name"], content=str(result))
+                ToolMessage(
+                    tool_call_id=tool_call["id"], name=tool_call["name"], content=str(result)
+                )
             )
         return {"messages": results}
 
@@ -885,13 +1183,18 @@ def build_agent(
     ensure_log_file: Any | None = None,
     append_log: Any | None = None,
     shorten_text: Any | None = None,
+    trace_writer: StructuredTraceWriter | None = None,
 ) -> Agent:
     if ChatOpenAI is None:
         raise ImportError("Missing runtime dependencies for LangGraph execution.")
 
     config = app_config or build_app_config(index_dir)
+    permission_policy = build_permission_policy(config.permissions)
+    permission_policy.validate_index_dir(index_dir)
     if not config.model.api_key:
-        raise EnvironmentError("Missing DASHSCOPE_API_KEY environment variable.")
+        raise EnvironmentError(
+            "Missing RAG_MODEL_API_KEY or DASHSCOPE_API_KEY environment variable."
+        )
 
     model = ChatOpenAI(
         model=config.model.model_name,
@@ -904,13 +1207,17 @@ def build_agent(
             min_evidence_score=config.generation.min_evidence_score,
         )
     ]
+    skill_registry = SkillRegistry(config.harness.skills_dir)
+    if skill_registry.available:
+        tools.append(LoadSkillTool(registry=skill_registry))
+    tools.append(ResearchPlanTool())
 
     if config.web.enabled:
         backend = build_configured_web_search_backend(config.web)
 
         def fetcher(url: str):
             return fetch_url(
-                url,
+                permission_policy.validate_web_fetch_url(url),
                 timeout_seconds=config.web.fetch_timeout_seconds,
                 max_bytes=config.web.fetch_max_bytes,
                 max_chars=config.web.fetch_max_chars,
@@ -953,4 +1260,6 @@ def build_agent(
             user_id=config.runtime.user_id,
         ),
         token_estimator=select_token_estimator(config.model.model_name),
+        skill_registry=skill_registry,
+        trace_writer=trace_writer,
     )

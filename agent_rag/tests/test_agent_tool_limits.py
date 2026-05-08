@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import unittest
 
@@ -23,6 +23,18 @@ class FakeModel:
 
     def invoke(self, messages):  # noqa: ANN001
         self.calls += 1
+        return self._message
+
+
+class CapturingModel:
+    def __init__(self, message: FakeMessage):
+        self._message = message
+        self.calls = 0
+        self.last_messages = None
+
+    def invoke(self, messages):  # noqa: ANN001
+        self.calls += 1
+        self.last_messages = messages
         return self._message
 
 
@@ -96,7 +108,9 @@ class AgentToolLimitTests(unittest.TestCase):
                 *_tool_round("local_rag_retrieve", query="q3", call_id="3"),
             ]
         }
-        agent = self._build_agent([{"id": "4", "name": "web_fetch", "args": {"url": "https://example.com"}}])
+        agent = self._build_agent(
+            [{"id": "4", "name": "web_fetch", "args": {"url": "https://example.com"}}]
+        )
         agent.base_model = FakeModel(FakeMessage(content="final answer from available evidence"))
 
         result = agent.call_openai(state)
@@ -138,7 +152,9 @@ class AgentToolLimitTests(unittest.TestCase):
                 *_tool_round("local_rag_retrieve", query="q3", call_id="3"),
             ]
         }
-        agent = self._build_agent([{"id": "4", "name": "web_fetch", "args": {"url": "https://example.com"}}])
+        agent = self._build_agent(
+            [{"id": "4", "name": "web_fetch", "args": {"url": "https://example.com"}}]
+        )
         agent.base_model = FakeModel(
             FakeMessage(
                 content="final answer even if the model tried another tool",
@@ -283,9 +299,200 @@ class AgentToolLimitTests(unittest.TestCase):
         contents = [agent._message_content(message) for message in messages]
 
         self.assertEqual(contents[0], "system")
-        task_state_content = next(content for content in contents if content.startswith("Task state:"))
-        self.assertIn("question: What are the differences between OpenAI and Gemini agents?", task_state_content)
+        task_state_content = next(
+            content for content in contents if content.startswith("Task state:")
+        )
+        self.assertIn(
+            "question: What are the differences between OpenAI and Gemini agents?",
+            task_state_content,
+        )
         self.assertIn("next_action: web_search", task_state_content)
+
+    def test_build_llm_messages_guides_search_away_from_failed_fetch_domains(self) -> None:
+        agent = Agent(system="system", recent_full_turns=1)
+        state = {
+            "messages": [
+                {
+                    "role": "human",
+                    "content": "How do the official Gemini docs describe tool use?",
+                },
+                {
+                    "role": "tool",
+                    "name": "web_fetch",
+                    "content": (
+                        '{"error":"tool_execution_failed","tool_name":"web_fetch","tool_args":'
+                        '{"url":"https://ai.google.dev/gemini-api/docs/function-calling"},'
+                        '"error_type":"HTTPError","message":"HTTP Error 302"}'
+                    ),
+                },
+            ]
+        }
+
+        messages = agent.build_llm_messages(state)
+        contents = [agent._message_content(message) for message in messages]
+        reflection_content = next(
+            content for content in contents if "Tool result 1 (web_fetch)" in content
+        )
+
+        self.assertIn("failed_fetch_domains: ai.google.dev", reflection_content)
+        self.assertIn("avoid repeating site:ai.google.dev", reflection_content)
+        self.assertIn("broaden the next web_search", reflection_content)
+
+    def test_build_llm_messages_limits_scholar_titles_to_selected_sources(self) -> None:
+        agent = Agent(system="system", recent_full_turns=1)
+        state = {
+            "messages": [
+                {
+                    "role": "human",
+                    "content": "Find recent papers or surveys related to Graph RAG agent evaluation.",
+                },
+                {
+                    "role": "tool",
+                    "name": "scholar_search",
+                    "content": (
+                        '{"results":['
+                        '{"title":"Paper A","url":"https://example.com/a","rank":1,"year":2025,"cited_by_count":10},'
+                        '{"title":"Paper B","url":"https://example.com/b","rank":2,"year":2025,"cited_by_count":8}'
+                        "]}"
+                    ),
+                },
+            ]
+        }
+
+        messages = agent.build_llm_messages(state)
+        contents = [agent._message_content(message) for message in messages]
+        reflection_content = next(
+            content for content in contents if "Tool result 1 (scholar_search)" in content
+        )
+
+        self.assertIn("Scholar title guardrail:", reflection_content)
+        self.assertIn("- Paper A", reflection_content)
+        self.assertIn("- Paper B", reflection_content)
+        self.assertIn(
+            "Only cite or discuss papers whose titles appear in the final source list below.",
+            reflection_content,
+        )
+
+    def test_tool_limit_final_answer_prompt_limits_scholar_titles_to_selected_sources(self) -> None:
+        state = {
+            "messages": [
+                {"role": "human", "content": "question"},
+                *_tool_round("local_rag_retrieve", query="q1", call_id="1"),
+                *_tool_round("web_search", query="q2", call_id="2"),
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "3",
+                            "name": "scholar_search",
+                            "args": {"topic": "Graph RAG agent evaluation"},
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "name": "scholar_search",
+                    "content": (
+                        '{"results":['
+                        '{"title":"Paper A","url":"https://example.com/a","rank":1,"year":2025,"cited_by_count":10},'
+                        '{"title":"Paper B","url":"https://example.com/b","rank":2,"year":2025,"cited_by_count":8}'
+                        "]}"
+                    ),
+                },
+            ]
+        }
+        agent = self._build_agent(
+            [{"id": "4", "name": "web_fetch", "args": {"url": "https://example.com"}}]
+        )
+        agent.base_model = CapturingModel(
+            FakeMessage(content="final answer from available evidence")
+        )
+
+        result = agent.call_openai(state)
+        message = result["messages"][0]
+        assert agent.base_model.last_messages is not None
+        final_prompt = agent.base_model.last_messages[-1].content
+
+        self.assertEqual(message.tool_calls, [])
+        self.assertIn("Scholar title guardrail:", final_prompt)
+        self.assertIn("- Paper A", final_prompt)
+        self.assertIn("- Paper B", final_prompt)
+        self.assertIn("If a paper is not in this list, do not mention it by title", final_prompt)
+
+    def test_call_openai_removes_failed_fetch_domain_site_filter_from_web_search(self) -> None:
+        agent = self._build_agent(
+            [
+                {
+                    "id": "search-1",
+                    "name": "web_search",
+                    "args": {
+                        "query": 'site:ai.google.dev "function calling" Gemini API',
+                        "top_k": 5,
+                    },
+                }
+            ]
+        )
+        state = {
+            "messages": [
+                {
+                    "role": "human",
+                    "content": "How do the official Gemini docs describe tool use?",
+                },
+                {
+                    "role": "tool",
+                    "name": "web_fetch",
+                    "content": (
+                        '{"error":"tool_execution_failed","tool_name":"web_fetch","tool_args":'
+                        '{"url":"https://ai.google.dev/gemini-api/docs/function-calling"},'
+                        '"error_type":"HTTPError","message":"HTTP Error 302"}'
+                    ),
+                },
+            ]
+        }
+
+        result = agent.call_openai(state)
+        query = result["messages"][0].tool_calls[0]["args"]["query"]
+
+        self.assertNotIn("site:ai.google.dev", query)
+        self.assertIn("function calling", query)
+        self.assertIn("Gemini API", query)
+
+    def test_call_openai_keeps_failed_domain_site_filter_when_user_requested_domain(self) -> None:
+        agent = self._build_agent(
+            [
+                {
+                    "id": "search-1",
+                    "name": "web_search",
+                    "args": {
+                        "query": 'site:ai.google.dev "function calling" Gemini API',
+                        "top_k": 5,
+                    },
+                }
+            ]
+        )
+        state = {
+            "messages": [
+                {
+                    "role": "human",
+                    "content": "Only search ai.google.dev for Gemini tool use docs.",
+                },
+                {
+                    "role": "tool",
+                    "name": "web_fetch",
+                    "content": (
+                        '{"error":"tool_execution_failed","tool_name":"web_fetch","tool_args":'
+                        '{"url":"https://ai.google.dev/gemini-api/docs/function-calling"},'
+                        '"error_type":"HTTPError","message":"HTTP Error 302"}'
+                    ),
+                },
+            ]
+        }
+
+        result = agent.call_openai(state)
+        query = result["messages"][0].tool_calls[0]["args"]["query"]
+
+        self.assertIn("site:ai.google.dev", query)
 
     def test_build_evidence_cache_returns_structured_object(self) -> None:
         agent = Agent(system="system")
@@ -372,7 +579,9 @@ class AgentToolLimitTests(unittest.TestCase):
         contents = [agent._message_content(message) for message in messages]
 
         self.assertEqual(contents[0], "system")
-        user_memory_content = next(content for content in contents if content.startswith("User memory:"))
+        user_memory_content = next(
+            content for content in contents if content.startswith("User memory:")
+        )
         self.assertIn("preferred_language: zh", user_memory_content)
         self.assertIn("answer_style: concise", user_memory_content)
 
@@ -436,7 +645,7 @@ class AgentToolLimitTests(unittest.TestCase):
 
         combined = "\n".join(logged_entries)
         self.assertIn("Question frame", combined)
-        self.assertIn('"task_intent": "compare"', combined)
+        self.assertIn('"task_intent": "comparison"', combined)
         self.assertIn('"target_entities": ["OpenAI", "Gemini"]', combined)
 
     def test_call_openai_rewrites_web_fetch_to_official_result_when_available(self) -> None:
@@ -449,7 +658,13 @@ class AgentToolLimitTests(unittest.TestCase):
                 {
                     "role": "assistant",
                     "content": "",
-                    "tool_calls": [{"id": "search-1", "name": "web_search", "args": {"query": "recent OpenAI news"}}],
+                    "tool_calls": [
+                        {
+                            "id": "search-1",
+                            "name": "web_search",
+                            "args": {"query": "recent OpenAI news"},
+                        }
+                    ],
                 },
                 {
                     "role": "tool",
@@ -567,7 +782,9 @@ class AgentToolLimitTests(unittest.TestCase):
             "https://openai.com/index/funding-update",
         )
 
-    def test_call_openai_keeps_non_official_fetch_when_only_official_url_already_failed(self) -> None:
+    def test_call_openai_keeps_non_official_fetch_when_only_official_url_already_failed(
+        self,
+    ) -> None:
         agent = self._build_agent(
             [{"id": "fetch-1", "name": "web_fetch", "args": {"url": "https://pcmag.com/openai"}}]
         )
@@ -635,7 +852,13 @@ class AgentToolLimitTests(unittest.TestCase):
         agent.model = FakeModel(
             FakeMessage(
                 content="need page body",
-                tool_calls=[{"id": "fetch-1", "name": "web_fetch", "args": {"url": "https://openai.com/news"}}],
+                tool_calls=[
+                    {
+                        "id": "fetch-1",
+                        "name": "web_fetch",
+                        "args": {"url": "https://openai.com/news"},
+                    }
+                ],
             )
         )
         state = {
@@ -660,6 +883,7 @@ class AgentToolLimitTests(unittest.TestCase):
         self.assertIn('"llm_decision": "tool_use"', combined)
         self.assertIn('"recommended_next_action": "web_fetch"', combined)
         self.assertIn('"latest_tool_name": "web_search"', combined)
+        self.assertIn('"failed_web_fetch_domains": []', combined)
         self.assertIn('"question": "What changed recently about OpenAI agents?"', combined)
 
     def test_system_prompt_prefers_detailed_answers_by_default(self) -> None:
@@ -669,4 +893,3 @@ class AgentToolLimitTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
