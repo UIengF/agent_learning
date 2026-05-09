@@ -1,0 +1,16 @@
+{
+  "tasks": [
+    {
+      "name": "permissions smoke",
+      "task": "review permission policy tests",
+      "suggested_mode": "ask",
+      "expected_validation": "python -m pytest tests/test_permissions.py"
+    },
+    {
+      "name": "repo map smoke",
+      "task": "explain repo map support",
+      "suggested_mode": "plan",
+      "expected_validation": "python -m pytest tests/test_phase2_repo_intelligence.py"
+    }
+  ]
+}

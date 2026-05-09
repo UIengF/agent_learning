@@ -20,3 +20,17 @@ agent_rag/.coverage
 agent_rag/.pytest_cache/
 agent_rag/.ruff_cache/
 agent_rag_local_backup_*/
+ai_coding_agent/runtime/
+ai_coding_agent/.env
+ai_coding_agent/**/__pycache__/
+ai_coding_agent/**/*.pyc
+ai_coding_agent/.coverage
+ai_coding_agent/.pytest_cache/
+ai_coding_agent/.ruff_cache/
+ai_coding/runtime/
+ai_coding/.env
+ai_coding/**/__pycache__/
+ai_coding/**/*.pyc
+ai_coding/.coverage
+ai_coding/.pytest_cache/
+ai_coding/.ruff_cache/

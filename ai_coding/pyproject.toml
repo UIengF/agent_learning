@@ -1,0 +1,51 @@
+[project]
+name = "ai-coding-agent"
+version = "0.1.0"
+description = "Local AI coding agent CLI with harness engineering, safe tools, sessions, and traces."
+requires-python = ">=3.11"
+dependencies = [
+    "langchain-core",
+    "langchain-openai",
+    "langgraph",
+    "pydantic",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = [
+    "runtime",
+    ".pytest_cache",
+    ".ruff_cache",
+]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.pyright]
+include = [
+    "aicoding.py",
+    "aicoding_app",
+    "tests",
+]
+exclude = [
+    "runtime",
+    ".pytest_cache",
+    ".ruff_cache",
+]
+pythonVersion = "3.11"
+typeCheckingMode = "basic"
+reportMissingTypeStubs = false
+
+[tool.coverage.run]
+branch = true
+source = ["aicoding_app"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 70
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+]
