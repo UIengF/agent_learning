@@ -19,6 +19,7 @@ def build_context(
     max_chars: int,
     project_instructions: str = "",
     repo_map: str = "",
+    documentation_summary: str = "",
     memory_summary: str = "",
 ) -> str:
     recent_history = history[-6:]
@@ -31,6 +32,8 @@ def build_context(
         project_instructions or "No project instructions found.",
         "Repository map:",
         repo_map or "No repository map captured yet.",
+        "Documentation files:",
+        documentation_summary or "No documentation summary captured yet.",
         "Memory summary:",
         memory_summary or "Memory: none",
         "Current coding plan:",

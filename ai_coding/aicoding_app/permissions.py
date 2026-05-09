@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import shlex
 
 
 class PermissionDenied(ValueError):
@@ -68,6 +69,13 @@ def _has_shell_control_operator(command: str) -> bool:
     return False
 
 
+def _split_command(command: str) -> list[str]:
+    try:
+        return shlex.split(command, posix=False)
+    except ValueError as exc:
+        raise CommandDenied(f"could not parse command: {exc}") from exc
+
+
 @dataclass(frozen=True)
 class WorkspacePolicy:
     workspace: Path
@@ -98,9 +106,33 @@ class WorkspacePolicy:
         for blocked in _BLOCKED_PREFIXES:
             if _matches_prefix(normalized, blocked):
                 raise CommandDenied(f"destructive command is not allowed: {blocked}")
-        if not any(_matches_prefix(stripped, allowed) for allowed in self.allowed_commands):
-            allowed_text = "; ".join(self.allowed_commands)
-            raise CommandDenied(
-                f"command is outside whitelist: {stripped}. Allowed: {allowed_text}"
-            )
-        return stripped
+        if any(_matches_prefix(stripped, allowed) for allowed in self.allowed_commands):
+            return stripped
+        if self._is_workspace_python_script_command(stripped):
+            return stripped
+        allowed_text = "; ".join(self.allowed_commands)
+        raise CommandDenied(
+            f"command is outside whitelist: {stripped}. "
+            f"Allowed: {allowed_text}; python <workspace-relative .py> [args]"
+        )
+
+    def _is_workspace_python_script_command(self, command: str) -> bool:
+        parts = _split_command(command)
+        if len(parts) < 2 or parts[0].lower() not in {"python", "python3"}:
+            return False
+        script_token = parts[1].strip("\"'")
+        if script_token.startswith("-"):
+            return False
+        script = Path(script_token)
+        if script.is_absolute() or script.suffix.lower() != ".py":
+            return False
+        if script.name.lower() == "setup.py" and any(
+            part.strip("\"'").lower() in {"install", "develop", "bdist_wheel", "sdist"}
+            for part in parts[2:]
+        ):
+            return False
+        try:
+            resolved = self.resolve_path(script)
+        except PermissionDenied:
+            return False
+        return resolved.is_file()

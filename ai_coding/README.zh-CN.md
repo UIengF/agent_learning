@@ -94,6 +94,13 @@ python aicoding.py resume --session-id demo
 python aicoding.py trace show --session-id demo
 ```
 
+启动本地 Trace Web UI：
+
+```powershell
+python aicoding.py trace serve
+python aicoding.py trace serve --session-id demo --port 8765
+```
+
 查看仓库映射：
 
 ```powershell
@@ -158,6 +165,7 @@ python aicoding.py text clean --workspace .
 - Skill loading：Agent 初始只看到 skill 清单，需要时再加载完整策略。
 - Coding plan：自动修改前必须先记录目标、修改步骤、验证步骤和风险。
 - Structured trace：模型调用、工具调用、patch、命令执行和最终回答写入 JSONL。
+- Trace Web UI：`trace serve` 启动本地浏览器界面，读取 `runtime/traces`，展示 session 摘要、工具调用时间线、验证命令、失败/拒绝调用和最终回答；同时提供安全版 Web Run 面板，支持 `ask`、`plan`、`edit`、`agent`，提交的 workspace 必须是项目根目录或 `runtime/` 下的目录。
 - Evidence cache：缓存文件片段、搜索结果、命令输出、patch 和 skill 内容摘要。
 - Context compression：保留项目指令、仓库映射、当前计划、最近会话、证据摘要和最新 diff。
 - Permission policy：文件访问限制在 `--workspace` 内，命令必须命中白名单。

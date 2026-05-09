@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 import re
+import shlex
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 import uuid
@@ -13,8 +14,9 @@ from .config import AppConfig, PROJECT_ROOT
 from .context_explain import explain_context
 from .context import build_context
 from .evidence_cache import EvidenceCache, compact_text
+from .harness_state import ToolRunState
 from .memory import MemoryStore
-from .permissions import WorkspacePolicy
+from .permissions import PermissionDenied, WorkspacePolicy
 from .plan import CodingPlan, format_plan
 from .project_instructions import load_project_instructions
 from .repo_map import build_repo_map
@@ -57,7 +59,31 @@ You are an AI coding agent operating inside one local workspace.
 
 Use tools to inspect files before editing. Before any apply_patch call, call
 plan_update with a concrete goal, edit steps, validation steps, and risks.
+Before apply_patch, call preview_patch with the exact same patch and only apply
+after the preview succeeds.
+For long complete files such as README files or large test modules, prefer
+write_text_file(path, content). It is a harness-controlled, traceable text file
+write tool and must also be preceded by plan_update.
+When adding documentation for a specific file, module, or feature, inspect the
+target documentation first and verify it covers the same topic. If an existing
+README clearly documents a different project, module, or domain, create a
+dedicated nearby document instead of appending unrelated content.
+If validation reports that Python, pytest, ruff, or pyright failed because the
+validation environment itself is broken, treat it as an environment/tooling
+blocker rather than an ordinary code failure. Do not retry the same failing validation command.
+Call check_environment once to diagnose fixed Python validation tooling.
+Do not automatically use install_python_package unless the task or configuration
+explicitly asks you to repair the environment. Do not use
+python -c, pip, or shell control operators to work around the command whitelist.
+Do not call check_environment repeatedly. After one diagnosis, continue with
+other allowed smoke tests, ruff, pyright, or report the
+environment limitation clearly.
 Never access paths outside the workspace. Only run commands through run_command.
+Commands already run with the workspace as current directory. Do not prefix
+commands with directory changes such as `cd`, `cd ..`, or `cd <path>`. Do not
+combine commands with `&&`, `||`, `;`, or pipes. If a command is denied, simplify
+to one bare allowed command such as `python script.py ...`, `python -m pytest ...`,
+`python -m ruff check ...`, `python -m pyright ...`, `git status`, or `git diff`.
 After edits, inspect git diff and run relevant allowed validation commands.
 If a tool returns command_denied or validation_denied, do not retry the same
 command. Use another allowed validation command or finish with the denial
@@ -72,6 +98,7 @@ Final answers must include:
 - Modified files
 - Validation commands and results
 - Remaining risks or follow-up work
+Clearly distinguish code failures from environment/tooling blockers.
 """
 
 
@@ -109,6 +136,22 @@ class TaskResult:
     response: str
 
 
+@dataclass(frozen=True)
+class CompletionStatus:
+    status: str
+    completed_items: list[str]
+    missing_items: list[str]
+    smoke_commands: list[str]
+    blocked_items: list[str]
+    skipped_commands: list[str]
+
+
+class HarnessStop(RuntimeError):
+    def __init__(self, message: str, run_state: ToolRunState):
+        super().__init__(message)
+        self.run_state = run_state
+
+
 class CodingAgent:
     def __init__(self, *, config: AppConfig, workspace: str | Path, session_id: str):
         workspace_path = Path(workspace).resolve()
@@ -131,7 +174,13 @@ class CodingAgent:
         self.memory_store = MemoryStore(config.harness.runtime_dir)
         self._last_read_only_model_error = ""
 
-    def _new_tools(self, task_id: str) -> tuple[CodingTools, CodingPlan, EvidenceCache]:
+    def _new_tools(
+        self,
+        task_id: str,
+        *,
+        run_state: ToolRunState | None = None,
+        require_patch_preview: bool = False,
+    ) -> tuple[CodingTools, CodingPlan, EvidenceCache]:
         plan = CodingPlan.from_jsonable(self.session.plan)
         evidence_cache = EvidenceCache.from_jsonable(self.session.evidence)
         tools = CodingTools(
@@ -142,6 +191,8 @@ class CodingAgent:
             trace_writer=self.trace_writer,
             command_timeout_seconds=self.config.harness.command_timeout_seconds,
             task_id=task_id,
+            run_state=run_state,
+            require_patch_preview=require_patch_preview,
         )
         return tools, plan, evidence_cache
 
@@ -171,10 +222,14 @@ class CodingAgent:
         elif normalized_mode == "agent":
             response = self._run_model_edit_or_fallback(task, task_id, mode="agent")
         elif self.config.model.configured and LANGGRAPH_AVAILABLE:
+            run_state = ToolRunState()
             try:
-                response = self._run_langgraph_task(task, task_id)
+                response = self._run_langgraph_task(task, task_id, run_state=run_state)
+            except HarnessStop as exc:
+                response = self._handle_harness_stop(task, task_id, exc)
             except Exception as exc:  # pragma: no cover - external model fallback
                 fallback_reason = str(exc)
+                run_state.reset_problem_counters_for_fallback()
                 self.trace_writer.append(
                     "model_fallback",
                     task_id=task_id,
@@ -182,17 +237,29 @@ class CodingAgent:
                     output_summary=fallback_reason,
                     status="failed",
                 )
-                response = "\n".join(
-                    [
-                        "Model execution failed; direct patch edit was attempted before deterministic fallback.",
-                        f"Model failure: {fallback_reason}",
-                        "",
-                        self._run_direct_patch_edit(task, task_id, mode=normalized_mode)
-                        or self._run_deterministic_task(task, task_id),
-                    ]
+                response = self._append_harness_correction(
+                    "\n".join(
+                        [
+                            "Model execution failed; direct patch edit was attempted before deterministic fallback.",
+                            f"Model failure: {fallback_reason}",
+                            "",
+                            self._run_direct_patch_edit(
+                                task,
+                                task_id,
+                                mode=normalized_mode,
+                                run_state=run_state,
+                            )
+                            or self._run_deterministic_task(task, task_id, run_state=run_state),
+                        ]
+                    ),
+                    run_state,
                 )
         else:
-            response = self._run_deterministic_task(task, task_id)
+            run_state = ToolRunState()
+            response = self._append_harness_correction(
+                self._run_deterministic_task(task, task_id, run_state=run_state),
+                run_state,
+            )
 
         self.session.add_message("assistant", response)
         self.session_store.save(self.session)
@@ -200,17 +267,25 @@ class CodingAgent:
             "final_response",
             task_id=task_id,
             input_summary="response",
-            output_summary=compact_text(response, 600),
+            output_summary=self._final_response_trace_summary(response),
         )
         return TaskResult(session_id=self.session_id, task_id=task_id, response=response)
 
     def _run_model_edit_or_fallback(self, task: str, task_id: str, *, mode: str) -> str:
+        completion = self._check_task_completion(task, task_id)
+        if completion.status in {"completed", "completed_with_environment_blocker"}:
+            return self._format_completion_summary(completion)
+
         if self.config.model.configured and LANGGRAPH_AVAILABLE:
             before_files = self._workspace_file_set()
+            run_state = ToolRunState()
             try:
-                return self._run_langgraph_task(task, task_id)
+                return self._run_langgraph_task(task, task_id, run_state=run_state)
+            except HarnessStop as exc:
+                return self._handle_harness_stop(task, task_id, exc)
             except Exception as exc:  # pragma: no cover - external model fallback
                 reason = str(exc)
+                run_state.reset_problem_counters_for_fallback()
                 self.trace_writer.append(
                     "model_fallback",
                     task_id=task_id,
@@ -223,34 +298,47 @@ class CodingAgent:
                     task_id=task_id,
                     before_files=before_files,
                     failure_reason=reason,
+                    run_state=run_state,
                 )
                 if partial_response:
-                    return partial_response
-                direct_response = self._run_direct_patch_edit(task, task_id, mode=mode)
+                    return self._append_harness_correction(partial_response, run_state)
+                direct_response = self._run_direct_patch_edit(
+                    task,
+                    task_id,
+                    mode=mode,
+                    run_state=run_state,
+                )
                 if direct_response:
-                    return "\n".join(
-                        [
-                            "LangGraph model execution failed; direct patch edit was used.",
-                            f"LangGraph failure: {reason}",
-                            "",
-                            direct_response,
-                        ]
-                    )
-                return "\n".join(
-                    [
-                        "Model execution failed; deterministic fallback was used.",
-                        f"Model failure: {reason}",
-                        "",
-                        self._run_deterministic_task(
-                            task,
-                            task_id,
-                            include_pr_summary=True,
-                            validation_command=self._validation_command_for_task(task)
-                            if mode == "agent"
-                            else None,
-                            auto_repair=mode == "agent",
+                    return self._append_harness_correction(
+                        "\n".join(
+                            [
+                                "LangGraph model execution failed; direct patch edit was used.",
+                                f"LangGraph failure: {reason}",
+                                "",
+                                direct_response,
+                            ]
                         ),
-                    ]
+                        run_state,
+                    )
+                return self._append_harness_correction(
+                    "\n".join(
+                        [
+                            "Model execution failed; deterministic fallback was used.",
+                            f"Model failure: {reason}",
+                            "",
+                            self._run_deterministic_task(
+                                task,
+                                task_id,
+                                include_pr_summary=True,
+                                validation_command=self._validation_command_for_task(task)
+                                if mode == "agent"
+                                else None,
+                                auto_repair=mode == "agent",
+                                run_state=run_state,
+                            ),
+                        ]
+                    ),
+                    run_state,
                 )
 
         if self.config.model.configured and not LANGGRAPH_AVAILABLE:
@@ -262,32 +350,45 @@ class CodingAgent:
                 output_summary=detail,
                 status="failed",
             )
-            direct_response = self._run_direct_patch_edit(task, task_id, mode=mode)
+            run_state = ToolRunState()
+            direct_response = self._run_direct_patch_edit(
+                task,
+                task_id,
+                mode=mode,
+                run_state=run_state,
+            )
             if direct_response:
-                return "\n".join(
-                    [
-                        "LangGraph tool runtime is unavailable; direct patch edit was used.",
-                        f"LangGraph import failure: {detail}",
-                        "",
-                        direct_response,
-                    ]
-                )
-            return "\n".join(
-                [
-                    "Model execution unavailable; deterministic fallback was used.",
-                    f"Model failure: LangGraph tool runtime is unavailable: {detail}",
-                    "Direct patch edit also failed; install edit/agent dependencies, or use run with explicit create/set/append/replace syntax.",
-                    "",
-                    self._run_deterministic_task(
-                        task,
-                        task_id,
-                        include_pr_summary=True,
-                        validation_command=self._validation_command_for_task(task)
-                        if mode == "agent"
-                        else None,
-                        auto_repair=mode == "agent",
+                return self._append_harness_correction(
+                    "\n".join(
+                        [
+                            "LangGraph tool runtime is unavailable; direct patch edit was used.",
+                            f"LangGraph import failure: {detail}",
+                            "",
+                            direct_response,
+                        ]
                     ),
-                ]
+                    run_state,
+                )
+            return self._append_harness_correction(
+                "\n".join(
+                    [
+                        "Model execution unavailable; deterministic fallback was used.",
+                        f"Model failure: LangGraph tool runtime is unavailable: {detail}",
+                        "Direct patch edit also failed; install edit/agent dependencies, or use run with explicit create/set/append/replace syntax.",
+                        "",
+                        self._run_deterministic_task(
+                            task,
+                            task_id,
+                            include_pr_summary=True,
+                            validation_command=self._validation_command_for_task(task)
+                            if mode == "agent"
+                            else None,
+                            auto_repair=mode == "agent",
+                            run_state=run_state,
+                        ),
+                    ]
+                ),
+                run_state,
             )
 
         return self._run_deterministic_task(
@@ -296,6 +397,325 @@ class CodingAgent:
             include_pr_summary=True,
             validation_command=self._validation_command_for_task(task) if mode == "agent" else None,
             auto_repair=mode == "agent",
+        )
+
+    def _handle_harness_stop(self, task: str, task_id: str, exc: HarnessStop) -> str:
+        return self._build_partial_summary(
+            task,
+            task_id,
+            exc.run_state,
+            failure_reason=str(exc),
+        )
+
+    def _check_task_completion(self, task: str, task_id: str) -> CompletionStatus:
+        required_files = self._required_files_for_task(task)
+        smoke_commands = self._smoke_commands_for_task(task)
+        if not required_files and not smoke_commands:
+            return CompletionStatus("unknown", [], [], [], [], [])
+        if required_files and not self._completion_file_check_requested(task):
+            return CompletionStatus("unknown", [], [], [], [], [])
+
+        completed: list[str] = []
+        missing: list[str] = []
+        blocked: list[str] = []
+        skipped: list[str] = []
+        for path in required_files:
+            if (self.workspace / path).exists():
+                completed.append(f"Required file exists: {path}")
+            else:
+                missing.append(f"Required file missing: {path}")
+
+        if missing:
+            return CompletionStatus("incomplete", completed, missing, [], blocked, skipped)
+        if self._explicit_validation_commands(task):
+            skipped.append("Explicit validation command present; completion check will not short-circuit.")
+            return CompletionStatus("unknown", completed, [], smoke_commands, blocked, skipped)
+
+        run_state = ToolRunState()
+        tools, plan, evidence_cache = self._new_tools(task_id, run_state=run_state)
+        for command in smoke_commands:
+            if self._should_skip_idempotent_smoke_command(command):
+                skipped.append(f"Skipped idempotent side-effect command already reflected in data: {command}")
+                continue
+            if not self._is_safe_completion_smoke_command(command):
+                skipped.append(f"Skipped unsafe or mutating smoke command during completion check: {command}")
+                return CompletionStatus("unknown", completed, [], smoke_commands, blocked, skipped)
+            output = tools.run_command(command)
+            if "returncode: 0" in output:
+                completed.append(f"Smoke command passed: {command}")
+            elif "Validation environment failure detected." in output:
+                blocked.append(f"Smoke command blocked by environment: {command}")
+            elif output.startswith("command_denied:"):
+                blocked.append(f"Smoke command denied by policy: {command}: {output}")
+            else:
+                missing.append(f"Smoke command failed: {command}")
+
+        self._persist_harness_state(plan, evidence_cache, tools, context_query=task)
+        if missing:
+            status = "incomplete"
+        elif blocked:
+            status = "completed_with_environment_blocker"
+        else:
+            status = "completed"
+        return CompletionStatus(status, completed, missing, smoke_commands, blocked, skipped)
+
+    def _completion_file_check_requested(self, task: str) -> bool:
+        lowered = task.lower()
+        positive_markers = (
+            "already",
+            "check",
+            "complete",
+            "ensure",
+            "ready",
+            "smoke",
+            "validate",
+            "verify",
+            "确认",
+            "完成",
+            "就绪",
+            "检查",
+            "验证",
+        )
+        mutation_markers = (
+            "append",
+            "change",
+            "create",
+            "edit",
+            "fix",
+            "implement",
+            "modify",
+            "replace",
+            "update",
+            "创建",
+            "修复",
+            "实现",
+            "替换",
+            "更新",
+            "添加",
+            "编辑",
+            "修改",
+        )
+        if any(marker in lowered for marker in mutation_markers):
+            return False
+        return any(marker in lowered for marker in positive_markers)
+
+    def _format_completion_summary(self, completion: CompletionStatus) -> str:
+        lines = [
+            "Task status:",
+            f"- {completion.status}",
+            "",
+            "Completed:",
+        ]
+        lines.extend(f"- {item}" for item in completion.completed_items)
+        if completion.skipped_commands:
+            lines.extend(f"- {item}" for item in completion.skipped_commands)
+        if not completion.completed_items and not completion.skipped_commands:
+            lines.append("- Existing workspace state satisfies the detectable task requirements.")
+        lines.extend(["", "Smoke commands:"])
+        if completion.smoke_commands:
+            lines.extend(f"- {command}" for command in completion.smoke_commands)
+        else:
+            lines.append("- No smoke commands were detected.")
+        lines.extend(["", "Blocked:"])
+        if completion.blocked_items:
+            lines.extend(f"- {item}" for item in completion.blocked_items)
+        else:
+            lines.append("- None.")
+        lines.extend(
+            [
+                "",
+                "Next action:",
+                "- No coding fallback was run because the detectable task requirements are already satisfied.",
+            ]
+        )
+        return "\n".join(lines)
+
+    def _required_files_for_task(self, task: str) -> list[str]:
+        files: list[str] = []
+        for match in re.finditer(r"(?<![\w./\\-])([A-Za-z0-9_./\\-]+\.(?:py|md|json|toml|yaml|yml|txt|csv))", task):
+            if match.start() > 0 and task[match.start() - 1] in {"/", "\\"}:
+                continue
+            raw_path = match.group(1).replace("\\", "/")
+            if any(part == ".." for part in raw_path.split("/")):
+                continue
+            path = raw_path.strip("./")
+            if not path or path in files:
+                continue
+            try:
+                relative = self.policy.relative_path(path)
+            except PermissionDenied:
+                continue
+            if relative not in files:
+                files.append(relative)
+        return files
+
+    def _smoke_commands_for_task(self, task: str) -> list[str]:
+        commands: list[str] = []
+        unsafe_fragments = ("python -c", "python -m pip", " pip ", "&&", "||", ";", "|")
+        validation_fragments = ("pytest", "ruff", "pyright")
+        for raw_line in task.splitlines():
+            line = raw_line.strip().strip("`")
+            line = re.sub(r"^[-*]\s+", "", line).strip().strip("`")
+            match = re.match(r"^(?:.*?:\s*)?(python\s+.+)$", line, flags=re.IGNORECASE)
+            if not match:
+                continue
+            command = match.group(1).strip().strip("`")
+            command_lower = command.lower()
+            if any(fragment in command_lower for fragment in unsafe_fragments):
+                continue
+            if any(fragment in command_lower for fragment in validation_fragments):
+                continue
+            parts = self._split_command_for_inspection(command)
+            if len(parts) < 2:
+                continue
+            script = parts[1]
+            if script.startswith("-") or not script.endswith(".py"):
+                continue
+            if command not in commands:
+                commands.append(command)
+        return commands
+
+    def _split_command_for_inspection(self, command: str) -> list[str]:
+        def clean_native_token(token: str) -> str:
+            cleaned = token.strip("\"'")
+            if "=" in cleaned:
+                key, value = cleaned.split("=", 1)
+                stripped_value = value.strip("\"'")
+                return f"{key}={stripped_value}"
+            return cleaned
+
+        try:
+            parts = shlex.split(command)
+            if "\\" not in command:
+                return parts
+            native_parts = shlex.split(command, posix=False)
+            if len(native_parts) == len(parts):
+                for index, native_part in enumerate(native_parts):
+                    parts[index] = clean_native_token(native_part)
+                if len(parts) >= 2:
+                    parts[1] = parts[1].replace("\\", "/")
+            elif len(parts) >= 2 and len(native_parts) >= 2:
+                parts[0] = clean_native_token(native_parts[0])
+                parts[1] = clean_native_token(native_parts[1]).replace("\\", "/")
+            return parts
+        except ValueError:
+            return []
+
+    def _is_safe_completion_smoke_command(self, command: str) -> bool:
+        parts = self._split_command_for_inspection(command)
+        if len(parts) < 2:
+            return False
+        executable = Path(parts[0]).name.lower()
+        if executable not in {"python", "python.exe"}:
+            return False
+        script = Path(parts[1]).name.lower()
+        if len(parts) > 2:
+            return False
+        return script.startswith("test_") and script.endswith(".py")
+
+    def _should_skip_idempotent_smoke_command(self, command: str) -> bool:
+        return False
+
+    def _build_partial_summary(
+        self,
+        task: str,
+        task_id: str,
+        run_state: ToolRunState,
+        *,
+        failure_reason: str = "",
+    ) -> str:
+        del task_id
+        status_by_reason = {
+            "environment_blocker_detected": "completed_with_environment_blocker",
+            "policy_denial_loop": "stopped_by_policy",
+            "tool_misuse_loop": "stopped_by_tool_misuse",
+            "too_many_dependency_violations": "stopped_by_harness",
+            "too_many_consecutive_tool_failures": "stopped_by_harness",
+        }
+        task_status = status_by_reason.get(run_state.stop_reason, "stopped_by_harness")
+        passed_validations = [
+            attempt for attempt in run_state.validation_attempts if attempt.status == "passed"
+        ]
+        failed_validations = [
+            attempt for attempt in run_state.validation_attempts if attempt.status == "failed"
+        ]
+        denied_validations = [
+            attempt for attempt in run_state.validation_attempts if attempt.status == "denied"
+        ]
+
+        completed: list[str] = []
+        completed.extend(f"Modified {path} (confirmed by harness state)." for path in run_state.written_files)
+        completed.extend(
+            f"Validation passed: {attempt.command}" for attempt in passed_validations
+        )
+        if not completed:
+            completed.append("No completed code changes could be confirmed from harness state.")
+
+        modified_files = run_state.written_files or ["No modified files were recorded by harness state."]
+        validation_lines: list[str] = []
+        validation_lines.extend(f"Passed: {attempt.command}" for attempt in passed_validations)
+        validation_lines.extend(f"Failed: {attempt.command}" for attempt in failed_validations)
+        validation_lines.extend(f"Denied: {attempt.command}" for attempt in denied_validations)
+        if not validation_lines:
+            validation_lines.append("No validation attempts were recorded by harness state.")
+
+        blocked: list[str] = []
+        blocked.extend(
+            f"Environment blocker: {attempt.command}: {attempt.detail}"
+            for attempt in run_state.environment_failures
+        )
+        blocked.extend(
+            f"Policy denial: {attempt.command}: {attempt.detail}"
+            for attempt in run_state.policy_denials
+        )
+        blocked.extend(
+            f"Tool misuse: {violation.tool_name}: {violation.detail}"
+            for violation in run_state.tool_misuses
+        )
+        blocked.extend(
+            f"Dependency violation: {violation.tool_name}: {violation.detail}"
+            for violation in run_state.dependency_violations
+        )
+        if not blocked:
+            blocked.append(f"Harness stopped: {run_state.stop_reason or failure_reason or 'unknown reason'}")
+
+        rerun_command = self._validation_command_for_task(task)
+        if run_state.stop_reason == "environment_blocker_detected":
+            next_action = "Repair local validation environment"
+            if rerun_command:
+                next_action = f"{next_action}, then rerun {rerun_command}."
+            else:
+                next_action = f"{next_action}, then rerun focused validation."
+        elif run_state.stop_reason == "policy_denial_loop":
+            next_action = "Use an allowed validation command or extend the whitelist deliberately."
+        elif run_state.stop_reason == "tool_misuse_loop":
+            next_action = "Retry with available tools only."
+        else:
+            next_action = "Inspect harness correction and rerun focused validation."
+
+        return "\n".join(
+            [
+                "Task status:",
+                f"- {task_status}",
+                "",
+                "Completed:",
+                *[f"- {item}" for item in completed],
+                "",
+                "Modified files:",
+                *[f"- {path}" for path in modified_files],
+                "",
+                "Validation:",
+                *[f"- {item}" for item in validation_lines],
+                "",
+                "Blocked:",
+                *[f"- {item}" for item in blocked],
+                "",
+                "Next action:",
+                f"- {next_action}",
+                "",
+                "Harness stop:",
+                f"- {failure_reason or run_state.stop_reason or 'unknown'}",
+            ]
         )
 
     def _workspace_file_set(self) -> set[str]:
@@ -316,12 +736,13 @@ class CodingAgent:
         task_id: str,
         before_files: set[str],
         failure_reason: str,
+        run_state: ToolRunState | None = None,
     ) -> str | None:
         after_files = self._workspace_file_set()
         created_files = sorted(after_files - before_files)
         if not created_files:
             return None
-        tools, plan, evidence_cache = self._new_tools(task_id)
+        tools, plan, evidence_cache = self._new_tools(task_id, run_state=run_state)
         tools.plan_update(
             goal=task,
             assumptions=["The model created files before failing to produce a final response."],
@@ -352,8 +773,15 @@ class CodingAgent:
             ]
         )
 
-    def _run_direct_patch_edit(self, task: str, task_id: str, *, mode: str) -> str | None:
-        tools, plan, evidence_cache = self._new_tools(task_id)
+    def _run_direct_patch_edit(
+        self,
+        task: str,
+        task_id: str,
+        *,
+        mode: str,
+        run_state: ToolRunState | None = None,
+    ) -> str | None:
+        tools, plan, evidence_cache = self._new_tools(task_id, run_state=run_state)
         files = tools.list_files()
         repo_map = tools.repo_map()
         instructions = self.project_instructions.as_context()
@@ -489,28 +917,33 @@ class CodingAgent:
     @staticmethod
     def _normalize_patch_block(patch: str) -> str:
         normalized = patch.strip()
-        normalized = re.sub(r"\b(Add File|Update File|Delete File): ", r"*** \1: ", normalized)
-        normalized = re.sub(r"\s+(\*\*\* (?:Add File|Update File|Delete File): )", r"\n\1", normalized)
-        normalized = re.sub(r"\s+(\*\*\* End Patch)", r"\n\1", normalized)
-        normalized = normalized.replace("*** Begin Patch ", "*** Begin Patch\n")
+        normalized = re.sub(
+            r"^\*\*\* Begin Patch\s+(?=(?:\*\*\* )?(?:Add File|Update File|Delete File): )",
+            "*** Begin Patch\n",
+            normalized,
+        )
+        normalized = re.sub(r"\s+\*\*\* End Patch$", "\n*** End Patch", normalized)
         lines = normalized.splitlines()
         cleaned: list[str] = []
-        in_add_file = False
+        section_mode = ""
         for line in lines:
             stripped = line.strip()
+            if not section_mode and re.match(r"^(Add File|Update File|Delete File): ", stripped):
+                stripped = f"*** {stripped}"
             if stripped.startswith("*** Add File: "):
-                in_add_file = True
+                section_mode = "add"
                 cleaned.append(stripped.split("```", 1)[0].rstrip())
                 continue
             if stripped.startswith("*** Update File: ") or stripped.startswith("*** Delete File: "):
-                in_add_file = False
+                section_mode = "update" if stripped.startswith("*** Update File: ") else "delete"
                 cleaned.append(stripped)
                 continue
             if stripped == "*** End Patch":
-                in_add_file = False
+                section_mode = ""
                 cleaned.append(stripped)
                 continue
-            if in_add_file and stripped.startswith("```"):
+            # Strip model-added Markdown fences around generated Add File content.
+            if section_mode == "add" and stripped.startswith("```"):
                 continue
             cleaned.append(line)
         return "\n".join(cleaned).strip()
@@ -537,6 +970,7 @@ class CodingAgent:
                 max_chars=self.config.harness.max_context_chars,
                 project_instructions=self.project_instructions.as_context(),
                 repo_map=self._repo_context_summary(context_query),
+                documentation_summary=self._documentation_context(),
                 memory_summary=self.memory_store.format(),
             ),
             2000,
@@ -548,6 +982,32 @@ class CodingAgent:
             return repo_summary
         explained = explain_context(self.workspace, query)
         return f"{explained}\n\nRepository map summary:\n{repo_summary}"
+
+    def _documentation_context(self) -> str:
+        docs: list[str] = []
+        for path in sorted(self.workspace.rglob("README*")):
+            if not path.is_file():
+                continue
+            try:
+                relative = path.relative_to(self.workspace)
+            except ValueError:
+                continue
+            first_heading = ""
+            try:
+                for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                    stripped = line.strip()
+                    if stripped.startswith("#"):
+                        first_heading = stripped.lstrip("#").strip()
+                        break
+                    if stripped and not first_heading:
+                        first_heading = compact_text(stripped, 80)
+                        break
+            except OSError:
+                first_heading = "unreadable"
+            docs.append(f"- {relative.as_posix()}: {first_heading or 'no heading'}")
+            if len(docs) >= 20:
+                break
+        return "\n".join(docs)
 
     def _overview_context(self, task: str) -> str:
         if not self._is_overview_task(task):
@@ -929,8 +1389,9 @@ class CodingAgent:
         include_pr_summary: bool = False,
         validation_command: str | None = None,
         auto_repair: bool = False,
+        run_state: ToolRunState | None = None,
     ) -> str:
-        tools, plan, evidence_cache = self._new_tools(task_id)
+        tools, plan, evidence_cache = self._new_tools(task_id, run_state=run_state)
         skill_name = self._select_skill(task)
         tools.load_skill(skill_name)
         files = tools.list_files()
@@ -1128,14 +1589,59 @@ class CodingAgent:
         )
 
     def _validation_command_for_task(self, task: str) -> str | None:
+        commands = self._validation_commands_for_task(task)
+        return commands[0] if commands else None
+
+    def _validation_commands_for_task(self, task: str) -> list[str]:
+        explicit = self._explicit_validation_commands(task)
+        if explicit:
+            return explicit
         lowered = task.lower()
-        if "pytest" in lowered or "test" in lowered or "测试" in task:
-            return "python -m pytest tests"
         if "ruff" in lowered or "lint" in lowered:
-            return "python -m ruff check ."
+            return ["python -m ruff check ."]
         if "pyright" in lowered or "type" in lowered or "类型" in task:
-            return "python -m pyright"
-        return None
+            return ["python -m pyright"]
+        if "pytest" in lowered or "test" in lowered or "测试" in task:
+            if (self.workspace / "tests").is_dir():
+                return ["python -m pytest tests"]
+            if any(self.workspace.glob("test_*.py")):
+                return ["python -m pytest"]
+            return []
+        return []
+
+    def _explicit_validation_commands(self, task: str) -> list[str]:
+        commands: list[str] = []
+        prefixes = (
+            "python -m pytest",
+            "pytest",
+            "python -m ruff check",
+            "ruff check",
+            "python -m pyright",
+            "pyright",
+        )
+        unsafe_fragments = ("python -c", "python -m pip", " pip ", "&&", "||", ";", "|")
+        for raw_line in task.splitlines():
+            line = raw_line.strip().strip("`")
+            line = re.sub(r"^[-*]\s+", "", line).strip().strip("`")
+            lowered = line.lower()
+            if any(fragment in lowered for fragment in unsafe_fragments):
+                continue
+            starts: list[tuple[int, str]] = []
+            for prefix in prefixes:
+                match = re.search(
+                    rf"^(?:run\s+|validate\s+with\s+|validation:\s*)?"
+                    rf"(?P<command>{re.escape(prefix)})(?:\s|$)",
+                    lowered,
+                )
+                if match:
+                    starts.append((match.start("command"), prefix))
+            if not starts:
+                continue
+            start, _ = min(starts, key=lambda item: item[0])
+            command = line[start:].strip().strip("`")
+            if command and command not in commands:
+                commands.append(command)
+        return commands
 
     def _extract_changed_files(self, patch_result: str) -> list[str]:
         prefix = "changed files: "
@@ -1192,12 +1698,23 @@ class CodingAgent:
 
         return None
 
-    def _run_langgraph_task(self, task: str, task_id: str) -> str:
+    def _run_langgraph_task(
+        self,
+        task: str,
+        task_id: str,
+        *,
+        run_state: ToolRunState | None = None,
+    ) -> str:
         if not LANGGRAPH_AVAILABLE or ChatOpenAI is None or StructuredTool is None:
             detail = LANGGRAPH_IMPORT_ERROR or CHAT_MODEL_IMPORT_ERROR
             raise RuntimeError(f"LangGraph runtime is not available: {detail}")
 
-        tools, plan, evidence_cache = self._new_tools(task_id)
+        run_state = run_state or ToolRunState()
+        tools, plan, evidence_cache = self._new_tools(
+            task_id,
+            run_state=run_state,
+            require_patch_preview=True,
+        )
         structured_tool = cast(Any, StructuredTool)
         chat_openai = cast(Any, ChatOpenAI)
         messages_state = cast(Any, MessagesState)
@@ -1211,12 +1728,15 @@ class CodingAgent:
             structured_tool.from_function(tools.list_files),
             structured_tool.from_function(tools.search_text),
             structured_tool.from_function(tools.read_file),
+            structured_tool.from_function(tools.write_text_file),
             structured_tool.from_function(tools.repo_map),
             structured_tool.from_function(tools.explain_context),
             structured_tool.from_function(tools.preview_patch),
             structured_tool.from_function(tools.apply_patch),
             structured_tool.from_function(tools.run_command),
             structured_tool.from_function(tools.run_validation),
+            structured_tool.from_function(tools.check_environment),
+            structured_tool.from_function(tools.install_python_package),
             structured_tool.from_function(tools.auto_repair_loop),
             structured_tool.from_function(tools.git_status),
             structured_tool.from_function(tools.git_diff),
@@ -1250,6 +1770,7 @@ class CodingAgent:
             max_chars=self.config.harness.max_context_chars,
             project_instructions=self.project_instructions.as_context(),
             repo_map=self._repo_context_summary(task),
+            documentation_summary=self._documentation_context(),
             memory_summary=self.memory_store.format(),
         )
 
@@ -1269,9 +1790,28 @@ class CodingAgent:
                 name = tool_call["name"]
                 args = tool_call.get("args", {})
                 try:
-                    result = tool_map[name].invoke(args)
+                    if name not in tool_map:
+                        available = ", ".join(sorted(tool_map))
+                        result = (
+                            f"unknown_tool: {name} is not available. "
+                            "For long file writes use write_text_file(path, content). "
+                            "For patch edits use preview_patch followed by apply_patch. "
+                            f"Available tools: {available}"
+                        )
+                        run_state.record_tool_misuse(name, result)
+                        self.trace_writer.append(
+                            "tool_call",
+                            task_id=task_id,
+                            tool_name=name,
+                            input_summary=str(args)[:400],
+                            output_summary=compact_text(str(result), 600),
+                            status="failed",
+                        )
+                    else:
+                        result = tool_map[name].invoke(args)
                 except Exception as exc:
                     result = f"tool_execution_failed: {exc}"
+                    run_state.record_tool_result(name, "failed")
                     self.trace_writer.append(
                         "tool_call",
                         task_id=task_id,
@@ -1287,6 +1827,27 @@ class CodingAgent:
                         content=str(result),
                     )
                 )
+                if run_state.should_stop():
+                    stop_result = (
+                        "dependency_stop: harness stopped tool execution after repeated "
+                        f"tool dependency or execution problems ({run_state.stop_reason})"
+                    )
+                    self.trace_writer.append(
+                        "model_fallback",
+                        task_id=task_id,
+                        input_summary="tool dependency state machine stopped execution",
+                        output_summary=stop_result,
+                        status="failed",
+                    )
+                    messages.append(
+                        tool_message(
+                            tool_call_id=tool_call["id"],
+                            name=name,
+                            content=stop_result,
+                        )
+                    )
+                    self._persist_harness_state(plan, evidence_cache, tools, context_query=task)
+                    raise HarnessStop(stop_result, run_state)
             return {"messages": messages}
 
         def has_action(state: AgentState) -> bool:
@@ -1312,8 +1873,109 @@ class CodingAgent:
         )
         final_message = result["messages"][-1]
         response = str(getattr(final_message, "content", final_message))
+        response = self._append_harness_correction(response, run_state)
         self._persist_harness_state(plan, evidence_cache, tools)
         return response
+
+    def _append_harness_correction(self, response: str, run_state: ToolRunState) -> str:
+        denied_commands = run_state.denied_commands
+        failed_validations = [
+            attempt for attempt in run_state.validation_attempts if attempt.status == "failed"
+        ]
+        denied_validations = [
+            attempt for attempt in run_state.validation_attempts if attempt.status == "denied"
+        ]
+        dependency_violations = run_state.dependency_violations
+        environment_failures = run_state.environment_failures
+        policy_denials = run_state.policy_denials
+        tool_misuses = run_state.tool_misuses
+        code_failures = run_state.code_failures
+        if (
+            not denied_commands
+            and not failed_validations
+            and not denied_validations
+            and not dependency_violations
+            and not environment_failures
+            and not policy_denials
+            and not tool_misuses
+            and not code_failures
+            and not run_state.stop_reason
+        ):
+            return response
+
+        passed_validations = [
+            attempt for attempt in run_state.validation_attempts if attempt.status == "passed"
+        ]
+        lines = [
+            response.rstrip(),
+            "",
+            "Harness correction:",
+        ]
+        if environment_failures:
+            lines.append("- Environment blockers:")
+            lines.extend(
+                f"  - {attempt.command}: {attempt.detail}"
+                for attempt in environment_failures
+            )
+        if policy_denials:
+            lines.append("- Policy denials:")
+            lines.extend(
+                f"  - {attempt.command}: {attempt.detail}"
+                for attempt in policy_denials
+            )
+        if tool_misuses:
+            lines.append("- Tool misuses:")
+            lines.extend(
+                f"  - {violation.tool_name}: {violation.detail}"
+                for violation in tool_misuses
+            )
+        if code_failures:
+            lines.append("- Code validation failures:")
+            lines.extend(f"  - {attempt.command}" for attempt in code_failures)
+        if denied_commands and not policy_denials:
+            lines.append("- Denied commands:")
+            lines.extend(
+                f"  - {attempt.command}: not run because it was outside the whitelist ({attempt.detail})"
+                for attempt in denied_commands
+            )
+        if dependency_violations:
+            lines.append("- Dependency violations:")
+            lines.extend(
+                f"  - {violation.tool_name}: {violation.detail}"
+                for violation in dependency_violations
+            )
+        if run_state.stop_reason:
+            lines.append(f"- Harness stop reason: {run_state.stop_reason}")
+        if failed_validations:
+            lines.append("- Failed validation commands:")
+            lines.extend(f"  - {attempt.command}" for attempt in failed_validations)
+        if denied_validations:
+            lines.append("- Denied validation commands:")
+            lines.extend(
+                f"  - {attempt.command}: not run because it was outside the whitelist ({attempt.detail})"
+                for attempt in denied_validations
+            )
+        if passed_validations:
+            lines.append("- Passed validation commands:")
+            lines.extend(f"  - {attempt.command}" for attempt in passed_validations)
+        return "\n".join(lines)
+
+    def _final_response_trace_summary(self, response: str) -> str:
+        marker = "Harness correction:"
+        matches = list(re.finditer(rf"(?m)^{re.escape(marker)}\s*$", response))
+        if not matches:
+            return compact_text(response, 1200)
+        marker_match = matches[-1]
+        before = response[: marker_match.start()]
+        correction = response[marker_match.end() :]
+        return "\n".join(
+            [
+                compact_text(before, 800),
+                "",
+                marker,
+                compact_text(correction.strip(), 1600),
+            ]
+        ).strip()
 
 
 def generate_session_id() -> str:

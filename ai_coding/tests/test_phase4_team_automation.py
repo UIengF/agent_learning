@@ -116,7 +116,11 @@ def test_schedule_plan_is_dry_run(tmp_path: Path, capsys) -> None:
     assert "no scheduler was created" in output
 
 
-def test_eval_run_reads_fixture_and_skips_execution(tmp_path: Path, capsys) -> None:
+def test_eval_run_reads_fixture_and_executes_hidden_validation(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    import aicoding_app.eval_harness as eval_harness
+
     suite = tmp_path / "suite.json"
     suite.write_text(
         json.dumps(
@@ -134,12 +138,35 @@ def test_eval_run_reads_fixture_and_skips_execution(tmp_path: Path, capsys) -> N
         encoding="utf-8",
     )
 
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            pass
+
+        def run_mode_task(self, mode: str, task: str):
+            from aicoding_app.agent import TaskResult
+
+            return TaskResult(session_id="fake-session", task_id="task-1", response="done")
+
+    class FakeValidation:
+        command = "python -m pytest tests"
+        ok = True
+
+        def format(self) -> str:
+            return "Validation command: python -m pytest tests\nStatus: passed"
+
+    monkeypatch.setattr(eval_harness, "CodingAgent", FakeAgent)
+    monkeypatch.setattr(
+        eval_harness,
+        "run_validation",
+        lambda policy, command, *, timeout_seconds: FakeValidation(),
+    )
+
     assert main(["eval", "run", "--workspace", str(tmp_path), "--suite", str(suite)]) == 0
 
     output = capsys.readouterr().out
-    assert "Eval dry-run summary:" in output
+    assert "Eval summary:" in output
     assert "task count: 1" in output
-    assert "execution: skipped" in output
+    assert "passed: 1" in output
     assert "demo" in output
 
 

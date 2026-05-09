@@ -46,6 +46,39 @@ def classify_validation_command(command: str) -> str:
     return "generic"
 
 
+def validation_environment_guidance(output: str) -> str:
+    lowered = output.lower()
+    environment_markers = (
+        "modulenotfounderror",
+        "importerror",
+        "pytest/__init__.py",
+        "_pytest",
+        "pytest' is not recognized",
+        "pytest' 不是内部或外部命令",
+        "no module named pytest",
+        "no module named pip",
+        "no module named ruff",
+        "no module named pyright",
+        "no module named pygments",
+        "ruff' is not recognized",
+        "pyright' is not recognized",
+    )
+    if not any(marker in lowered for marker in environment_markers):
+        return ""
+    return "\n".join(
+        [
+            "Validation environment failure detected.",
+            "This appears to be an environment/tooling problem, not necessarily a code failure.",
+            "Do not retry the same validation command.",
+            (
+                "Do not install packages or use python -c / pip / shell control operators "
+                "unless environment repair is explicitly requested."
+            ),
+            "Continue with other allowed validation or report this as an environment limitation.",
+        ]
+    )
+
+
 def run_validation(
     policy: WorkspacePolicy,
     command: str,
@@ -64,12 +97,14 @@ def run_validation(
     combined_output = "\n".join([completed.stdout, completed.stderr])
     failure_context = ""
     if classify_validation_command(validated) == "pytest" and completed.returncode != 0:
-        failure_context = "\n\n".join(
-            [
-                format_pytest_failures(combined_output),
-                explain_context(policy.workspace, combined_output),
-            ]
-        )
+        context_parts = [
+            format_pytest_failures(combined_output),
+            explain_context(policy.workspace, combined_output),
+        ]
+        environment_guidance = validation_environment_guidance(combined_output)
+        if environment_guidance:
+            context_parts.append(environment_guidance)
+        failure_context = "\n\n".join(part for part in context_parts if part)
     return ValidationResult(
         command=validated,
         returncode=completed.returncode,

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
+import re
 import subprocess
+import sys
 from typing import Any
 
 from .evidence_cache import EvidenceCache, compact_text
 from .context_explain import explain_context
+from .harness_state import ToolRunState
 from .hooks import preview_hook
 from .patching import apply_agent_patch, preview_agent_patch, validate_patch_paths
 from .permissions import WorkspacePolicy
@@ -16,10 +20,24 @@ from .repo_map import build_repo_map
 from .skills import SkillRegistry
 from .text_hygiene import clean_text_hygiene, format_text_hygiene_report
 from .trace import StructuredTraceWriter
-from .validation import run_validation as execute_validation
+from .validation import run_validation as execute_validation, validation_environment_guidance
 
 
 _SKIP_DIRS = {".git", ".venv", "__pycache__", ".pytest_cache", ".ruff_cache", "runtime"}
+_WRITE_TEXT_ALLOWED_SUFFIXES = {
+    ".py",
+    ".md",
+    ".txt",
+    ".json",
+    ".toml",
+    ".yaml",
+    ".yml",
+    ".csv",
+}
+_WRITE_TEXT_BLOCKED_NAMES = {".env", ".env.local", ".env.production", ".env.development"}
+_PACKAGE_SPEC_PATTERN = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9_.-]*([<>=!~]=?[A-Za-z0-9_.!*+:-]+)?$"
+)
 
 
 def _stdout_lines(command_text: str) -> list[str]:
@@ -33,6 +51,30 @@ def _stdout_lines(command_text: str) -> list[str]:
     except ValueError:
         end = len(lines)
     return [line.strip() for line in lines[start:end] if line.strip()]
+
+
+def _is_validation_like_command(command: str) -> bool:
+    lowered = command.lower()
+    return "pytest" in lowered or "ruff" in lowered or "pyright" in lowered
+
+
+def _is_safe_package_spec(package: str) -> bool:
+    stripped = package.strip()
+    if not stripped or any(char.isspace() for char in stripped):
+        return False
+    if stripped.startswith("-") or "://" in stripped or "/" in stripped or "\\" in stripped:
+        return False
+    return bool(_PACKAGE_SPEC_PATTERN.fullmatch(stripped))
+
+
+def _command_text(command: list[str]) -> str:
+    return " ".join(command)
+
+
+def _process_output_text(value: str | bytes | None) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value or ""
 
 
 @dataclass(frozen=True)
@@ -66,6 +108,8 @@ class CodingTools:
         trace_writer: StructuredTraceWriter,
         command_timeout_seconds: int = 60,
         task_id: str | None = None,
+        run_state: ToolRunState | None = None,
+        require_patch_preview: bool = False,
     ):
         self.policy = policy
         self.plan = plan
@@ -74,6 +118,8 @@ class CodingTools:
         self.trace_writer = trace_writer
         self.command_timeout_seconds = command_timeout_seconds
         self.task_id = task_id
+        self.run_state = run_state or ToolRunState()
+        self.require_patch_preview = require_patch_preview
 
     def _trace(
         self,
@@ -93,6 +139,22 @@ class CodingTools:
             status=status,
             payload=payload,
         )
+
+    def _record_tool_result(self, tool_name: str, status: str) -> None:
+        self.run_state.record_tool_result(tool_name, status)
+
+    def _record_failed_validation_classification(
+        self,
+        *,
+        command: str,
+        stdout: str = "",
+        stderr: str = "",
+        detail: str = "",
+    ) -> None:
+        if "Validation environment failure detected" in "\n".join([stdout, stderr, detail]):
+            self.run_state.record_environment_failure(command, detail, stdout, stderr)
+        else:
+            self.run_state.record_code_failure(command, stdout, stderr, detail)
 
     def list_files(self, pattern: str = "**/*") -> str:
         """List workspace files matching a glob pattern."""
@@ -163,17 +225,84 @@ class CodingTools:
         self._trace("read_file", key, f"{len(selected)} lines")
         return numbered
 
+    def write_text_file(self, path: str, content: str) -> str:
+        """Safely write a complete UTF-8 text file after a plan, with traceable preview metadata."""
+        dependency_error = self.run_state.check_dependency(
+            "write_text_file",
+            plan_ready=self.plan.ready_for_edit,
+        )
+        if dependency_error:
+            self.run_state.record_dependency_violation("write_text_file", dependency_error)
+            self._trace("write_text_file", path, dependency_error, status="denied")
+            return dependency_error
+
+        try:
+            resolved = self.policy.resolve_path(path)
+        except Exception as exc:
+            detail = f"path_denied: {exc}"
+            self._record_tool_result("write_text_file", "denied")
+            self._trace("write_text_file", path, detail, status="denied")
+            return detail
+
+        relative_path = resolved.relative_to(self.policy.workspace).as_posix()
+        if resolved.name.lower() in _WRITE_TEXT_BLOCKED_NAMES:
+            detail = f"write_denied: refusing to write sensitive file {relative_path}"
+            self._record_tool_result("write_text_file", "denied")
+            self._trace("write_text_file", relative_path, detail, status="denied")
+            return detail
+        if resolved.suffix.lower() not in _WRITE_TEXT_ALLOWED_SUFFIXES:
+            detail = (
+                "write_denied: write_text_file only supports text/code extensions "
+                f"{sorted(_WRITE_TEXT_ALLOWED_SUFFIXES)}"
+            )
+            self._record_tool_result("write_text_file", "denied")
+            self._trace("write_text_file", relative_path, detail, status="denied")
+            return detail
+
+        old_text = ""
+        if resolved.exists():
+            old_text = resolved.read_text(encoding="utf-8", errors="replace")
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+        resolved.write_text(content, encoding="utf-8")
+        self.run_state.mark_file_written(relative_path)
+        self._record_tool_result("write_text_file", "ok")
+        preview = (
+            f"write preview: {relative_path}; "
+            f"old_lines={len(old_text.splitlines())}; new_lines={len(content.splitlines())}"
+        )
+        output = f"changed files: {relative_path}"
+        self.evidence_cache.add("file_write", relative_path, preview)
+        self._trace(
+            "write_text_file",
+            relative_path,
+            output,
+            payload={
+                "path": relative_path,
+                "old_line_count": len(old_text.splitlines()),
+                "new_line_count": len(content.splitlines()),
+                "content_summary": compact_text(content, 500),
+            },
+        )
+        return f"{preview}\n{output}"
+
     def apply_patch(self, patch: str) -> str:
         """Apply an exact *** Begin Patch block after a coding plan has been recorded."""
-        if not self.plan.ready_for_edit:
-            result = "plan_required: call plan_update with edit_steps before apply_patch"
-            self._trace("apply_patch", compact_text(patch, 300), result, status="denied")
-            return result
+        dependency_error = self.run_state.check_dependency(
+            "apply_patch",
+            patch=patch,
+            plan_ready=self.plan.ready_for_edit,
+            require_patch_preview=self.require_patch_preview,
+        )
+        if dependency_error:
+            self.run_state.record_dependency_violation("apply_patch", dependency_error)
+            self._trace("apply_patch", compact_text(patch, 300), dependency_error, status="denied")
+            return dependency_error
         try:
             changed_paths = validate_patch_paths(self.policy, patch)
             result = apply_agent_patch(self.policy, patch)
         except Exception as exc:
             result_text = f"patch_failed: {exc}"
+            self._record_tool_result("apply_patch", "failed")
             self._trace(
                 "apply_patch",
                 compact_text(patch, 300),
@@ -182,6 +311,8 @@ class CodingTools:
             )
             return result_text
         output = "changed files: " + ", ".join(result.changed_files)
+        self.run_state.mark_patch_applied(patch)
+        self._record_tool_result("apply_patch", "ok")
         self.evidence_cache.add("patch", ",".join(changed_paths), patch)
         self._trace("apply_patch", compact_text(patch, 300), output)
         return output
@@ -193,6 +324,7 @@ class CodingTools:
             result = preview_agent_patch(self.policy, patch)
         except Exception as exc:
             result_text = f"patch_preview_failed: {exc}"
+            self._record_tool_result("preview_patch", "failed")
             self._trace(
                 "preview_patch",
                 compact_text(patch, 300),
@@ -201,6 +333,8 @@ class CodingTools:
             )
             return result_text
         output = "preview changed files: " + ", ".join(result.changed_files)
+        self.run_state.mark_patch_preview(patch)
+        self._record_tool_result("preview_patch", "ok")
         self.evidence_cache.add("patch_preview", ",".join(changed_paths), patch)
         self._trace("preview_patch", compact_text(patch, 300), output)
         return output
@@ -210,8 +344,12 @@ class CodingTools:
         try:
             validated = self.policy.validate_command(command)
         except Exception as exc:
-            self._trace("run_command", command, str(exc), status="denied")
-            return f"command_denied: {exc}"
+            detail = str(exc)
+            self.run_state.record_denied_command(command, detail)
+            self.run_state.record_policy_denial(command, detail)
+            self._record_tool_result("run_command", "denied")
+            self._trace("run_command", command, detail, status="denied")
+            return f"command_denied: {detail}"
 
         completed = subprocess.run(
             validated,
@@ -229,6 +367,29 @@ class CodingTools:
         )
         text = result.as_text()
         status = "ok" if completed.returncode == 0 else "failed"
+        environment_guidance = ""
+        if status == "failed" and _is_validation_like_command(validated):
+            environment_guidance = validation_environment_guidance(
+                "\n".join([completed.stdout, completed.stderr])
+            )
+            if environment_guidance:
+                text = f"{text}\n\n{environment_guidance}"
+        if _is_validation_like_command(validated):
+            if completed.returncode != 0:
+                self._record_failed_validation_classification(
+                    command=validated,
+                    stdout=completed.stdout,
+                    stderr=completed.stderr,
+                    detail=environment_guidance,
+                )
+            self.run_state.record_validation(
+                command=validated,
+                status="passed" if completed.returncode == 0 else "failed",
+                stdout=completed.stdout,
+                stderr=completed.stderr,
+                detail=environment_guidance,
+            )
+        self._record_tool_result("run_command", status)
         self.evidence_cache.add("command", validated, text)
         self._trace("run_command", validated, compact_text(text, 500), status=status)
         return text
@@ -242,14 +403,155 @@ class CodingTools:
                 timeout_seconds=self.command_timeout_seconds,
             )
         except Exception as exc:
-            self._trace("run_validation", command, str(exc), status="denied")
-            return f"validation_denied: {exc}"
+            detail = str(exc)
+            self.run_state.record_denied_command(command, detail)
+            self.run_state.record_policy_denial(command, detail)
+            self.run_state.record_validation(command=command, status="denied", detail=detail)
+            self._record_tool_result("run_validation", "denied")
+            self._trace("run_validation", command, detail, status="denied")
+            return f"validation_denied: {detail}"
         text = result.format()
         status = "ok" if result.ok else "failed"
+        validation_detail = result.failure_context
+        if not result.ok:
+            validation_detail = result.failure_context or validation_environment_guidance(
+                "\n".join([result.stdout, result.stderr])
+            )
+            self._record_failed_validation_classification(
+                command=result.command,
+                stdout=result.stdout,
+                stderr=result.stderr,
+                detail=validation_detail,
+            )
+        self.run_state.record_validation(
+            command=result.command,
+            status="passed" if result.ok else "failed",
+            stdout=result.stdout,
+            stderr=result.stderr,
+            detail=validation_detail,
+        )
+        self._record_tool_result("run_validation", status)
         self.evidence_cache.add("validation", result.command, text)
         self._trace("run_validation", result.command, compact_text(text, 500), status=status)
         hook_text = preview_hook(self.policy, "after_verify").format()
         return f"{text}\n\n{hook_text}"
+
+    def check_environment(self) -> str:
+        """Run safe, read-only diagnostics for Python validation tooling."""
+        probes = {
+            "python": [sys.executable, "--version"],
+            "pytest": [sys.executable, "-m", "pytest", "--version"],
+            "pip": [sys.executable, "-m", "pip", "--version"],
+            "ruff": [sys.executable, "-m", "ruff", "--version"],
+            "pyright": [sys.executable, "-m", "pyright", "--version"],
+        }
+        report: dict[str, dict[str, Any]] = {}
+        found_environment_failure = False
+        for name, command in probes.items():
+            command_text = _command_text(command)
+            try:
+                completed = subprocess.run(
+                    command,
+                    cwd=self.policy.workspace,
+                    shell=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=self.command_timeout_seconds,
+                )
+                stdout = completed.stdout.strip()
+                stderr = completed.stderr.strip()
+                guidance = validation_environment_guidance("\n".join([stdout, stderr]))
+                ok = completed.returncode == 0
+                reason = ""
+                if not ok:
+                    reason = "environment_failure" if guidance else "command_failed"
+                report[name] = {
+                    "ok": ok,
+                    "command": command_text,
+                    "stdout_summary": compact_text(stdout, 500),
+                    "stderr_summary": compact_text(stderr, 500),
+                }
+                if reason:
+                    report[name]["reason"] = reason
+                if guidance:
+                    found_environment_failure = True
+                    self.run_state.record_environment_failure(
+                        command_text,
+                        guidance,
+                        stdout,
+                        stderr,
+                    )
+            except subprocess.TimeoutExpired as exc:
+                stdout = _process_output_text(exc.stdout).strip()
+                stderr = _process_output_text(exc.stderr).strip()
+                report[name] = {
+                    "ok": False,
+                    "command": command_text,
+                    "stdout_summary": compact_text(stdout, 500),
+                    "stderr_summary": compact_text(stderr, 500),
+                    "reason": "timeout",
+                }
+            except OSError as exc:
+                report[name] = {
+                    "ok": False,
+                    "command": command_text,
+                    "stdout_summary": "",
+                    "stderr_summary": compact_text(str(exc), 500),
+                    "reason": "not_available",
+                }
+        if found_environment_failure:
+            self.run_state.mark_environment_diagnosed()
+        result = json.dumps(report, ensure_ascii=True, indent=2)
+        self._record_tool_result("check_environment", "ok")
+        self.evidence_cache.add("environment", "check", result)
+        self._trace("check_environment", ".", compact_text(result, 500))
+        return result
+
+    def install_python_package(self, package: str) -> str:
+        """Install one safe Python package spec only when environment repair is explicit."""
+        package = package.strip()
+        if not self.run_state.has_validation_environment_failure():
+            result = (
+                "install_denied: install_python_package is reserved for explicit environment "
+                "repair after a validation environment failure is detected"
+            )
+            self._record_tool_result("install_python_package", "denied")
+            self._trace("install_python_package", package, result, status="denied")
+            return result
+        if not _is_safe_package_spec(package):
+            result = (
+                "install_denied: package must be a single safe package name or version spec, "
+                "not an option, path, URL, or compound command"
+            )
+            self._record_tool_result("install_python_package", "denied")
+            self._trace("install_python_package", package, result, status="denied")
+            return result
+
+        command = [sys.executable, "-m", "pip", "install", package]
+        completed = subprocess.run(
+            command,
+            cwd=self.policy.workspace,
+            capture_output=True,
+            text=True,
+            timeout=self.command_timeout_seconds,
+        )
+        status = "ok" if completed.returncode == 0 else "failed"
+        self._record_tool_result("install_python_package", status)
+        result = CommandResult(
+            command=" ".join(command),
+            returncode=completed.returncode,
+            stdout=completed.stdout,
+            stderr=completed.stderr,
+        ).as_text()
+        self.evidence_cache.add("pip_install", package, result)
+        self._trace(
+            "install_python_package",
+            package,
+            compact_text(result, 500),
+            status=status,
+            payload={"package": package},
+        )
+        return result
 
     def auto_repair_loop(self, validation_command: str, max_attempts: int = 2) -> str:
         """Run validation, attempt conservative repairs, and re-run validation."""
@@ -368,5 +670,7 @@ class CodingTools:
             validation_steps=validation_steps or [],
             risks=risks or [],
         )
+        self.run_state.mark_plan()
+        self._record_tool_result("plan_update", "ok")
         self._trace("plan_update", goal, "plan updated")
         return "plan updated"

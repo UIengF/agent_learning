@@ -127,6 +127,9 @@ def _parse_hunks(body: list[str]) -> list[tuple[list[str], list[str]]]:
         elif line == "":
             old.append("")
             new.append("")
+        else:
+            old.append(line)
+            new.append(line)
     flush()
     return hunks
 
@@ -145,8 +148,14 @@ def _replace_once(content: str, old_lines: list[str], new_lines: list[str], path
     new_block = "\n".join(new_lines)
     if old_block == "":
         return content + ("\n" if content and not content.endswith("\n") else "") + new_block + "\n"
-    if old_block not in content:
+    match_count = content.count(old_block)
+    if match_count == 0:
         raise ValueError(f"patch hunk did not match file: {path}")
+    if match_count > 1:
+        raise ValueError(
+            f"patch hunk matches {match_count} locations in file: {path}; "
+            "cannot disambiguate without line numbers"
+        )
     return content.replace(old_block, new_block, 1)
 
 

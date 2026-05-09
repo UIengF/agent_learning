@@ -49,3 +49,35 @@ def test_command_policy_ignores_control_operators_inside_quotes(tmp_path: Path) 
 
     with pytest.raises(CommandDenied):
         policy.validate_command('python -c "print(1)" | more')
+
+
+def test_command_policy_allows_workspace_python_scripts(tmp_path: Path) -> None:
+    (tmp_path / "task_manager.py").write_text("print('ok')\n", encoding="utf-8")
+    policy = WorkspacePolicy(workspace=tmp_path, allowed_commands=("git status",))
+
+    assert policy.validate_command("python task_manager.py") == "python task_manager.py"
+    assert (
+        policy.validate_command('python task_manager.py add "Buy groceries"')
+        == 'python task_manager.py add "Buy groceries"'
+    )
+
+
+def test_command_policy_blocks_unsafe_python_invocations(tmp_path: Path) -> None:
+    (tmp_path / "task_manager.py").write_text("print('ok')\n", encoding="utf-8")
+    (tmp_path / "setup.py").write_text("print('setup')\n", encoding="utf-8")
+    policy = WorkspacePolicy(workspace=tmp_path, allowed_commands=("git status",))
+
+    with pytest.raises(CommandDenied):
+        policy.validate_command('python -c "print(1)"')
+
+    with pytest.raises(CommandDenied):
+        policy.validate_command("python -m pip install pygments")
+
+    with pytest.raises(CommandDenied):
+        policy.validate_command("python ../outside.py")
+
+    with pytest.raises(CommandDenied):
+        policy.validate_command("python missing.py")
+
+    with pytest.raises(CommandDenied):
+        policy.validate_command("python setup.py install")

@@ -102,6 +102,15 @@ Show structured trace:
 python aicoding.py trace show --session-id demo
 ```
 
+Serve the local multi-turn Web UI:
+
+```powershell
+python aicoding.py web --open
+python aicoding.py web --session-id demo --port 8765
+python aicoding.py trace serve
+python aicoding.py trace serve --session-id demo --port 8765
+```
+
 Print repository intelligence:
 
 ```powershell
@@ -168,6 +177,12 @@ python aicoding.py text clean --workspace .
 - Planning: edits require a recorded plan before `apply_patch` can mutate files.
 - Structured trace: model calls, tool calls, patch application, command results,
   and final responses are written as JSONL.
+- Multi-turn Web UI: `web` starts a local-only browser UI for user-facing
+  coding conversations. It restores saved session history, keeps follow-up
+  turns on the same session id, supports `ask`, `plan`, `edit`, and `agent`,
+  and keeps trace/tool details in a side inspector. Submitted workspaces must
+  be the project root or a directory under `runtime/`. `trace serve` remains
+  available as a compatibility alias for the same local server.
 - Evidence cache: file reads, searches, commands, patches, and skills are cached
   as summaries for later turns.
 - Context compression: session context preserves the current plan, recent turns,

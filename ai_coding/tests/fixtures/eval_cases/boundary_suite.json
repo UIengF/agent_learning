@@ -1,0 +1,102 @@
+{
+  "tasks": [
+    {
+      "name": "case01 harness hidden pass",
+      "task": "Create case01/result.txt containing a short sentence that includes the word pass.",
+      "suggested_mode": "agent",
+      "hidden_validation": "python -m pytest {{suite_dir}}/hidden/boundary_checks.py -q -k case01_harness_hidden_pass"
+    },
+    {
+      "name": "case02 hidden regression edge",
+      "task": "Fix case02/calculator.py so add(a, b) correctly adds positive and negative integers. Use the visible test as a hint, but preserve a simple function API.",
+      "suggested_mode": "agent",
+      "setup_files": {
+        "case02/calculator.py": "def add(a, b):\n    return abs(a) + abs(b)\n",
+        "case02/test_public_calculator.py": "from calculator import add\n\n\ndef test_add_positive_numbers():\n    assert add(2, 3) == 5\n"
+      },
+      "visible_validation": "python -m pytest case02/test_public_calculator.py",
+      "hidden_validation": "python -m pytest {{suite_dir}}/hidden/boundary_checks.py -q -k case02_hidden_regression_edge"
+    },
+    {
+      "name": "case03 permission note",
+      "task": "Write case03/notes.txt with a one-line explanation that hidden validation must still respect command permissions.",
+      "suggested_mode": "agent",
+      "hidden_validation": "python -m pytest {{suite_dir}}/hidden/boundary_checks.py -q -k case03_permission_note"
+    },
+    {
+      "name": "case04 worklog round one",
+      "task": "Start a project worklog in case04/worklog.md. Add a Day 1 entry that mentions setup harness.",
+      "suggested_mode": "agent",
+      "group_id": "worklog",
+      "hidden_validation": "python -m pytest {{suite_dir}}/hidden/boundary_checks.py -q -k case04_worklog_round_one"
+    },
+    {
+      "name": "case05 worklog round two",
+      "task": "Continue the existing case04/worklog.md. Preserve the Day 1 entry and append a Day 2 entry.",
+      "suggested_mode": "agent",
+      "group_id": "worklog",
+      "continue_session": true,
+      "hidden_validation": "python -m pytest {{suite_dir}}/hidden/boundary_checks.py -q -k case05_worklog_round_two_continue_session"
+    },
+    {
+      "name": "case06 csv bom cli",
+      "task": "Create case06/sum_scores.py. It should accept a CSV path argument, handle UTF-8 BOM, sum the score column, and print the total.",
+      "suggested_mode": "agent",
+      "setup_files": {
+        "case06/scores.csv": "\ufeffname,score\nAda,10\nGrace,15\nLinus,20\n"
+      },
+      "visible_validation": "python case06/sum_scores.py case06/scores.csv",
+      "hidden_validation": "python -m pytest {{suite_dir}}/hidden/boundary_checks.py -q -k case06_csv_bom_cli"
+    },
+    {
+      "name": "case07 json store export",
+      "task": "Read case07/tasks.jsonl and create case07/export.json with total count plus open and closed task id arrays.",
+      "suggested_mode": "agent",
+      "setup_files": {
+        "case07/tasks.jsonl": "{\"id\":\"T-1\",\"status\":\"open\"}\n{\"id\":\"T-2\",\"status\":\"closed\"}\n{\"id\":\"T-3\",\"status\":\"open\"}\n"
+      },
+      "hidden_validation": "python -m pytest {{suite_dir}}/hidden/boundary_checks.py -q -k case07_json_store_export"
+    },
+    {
+      "name": "case08 note indexer round one",
+      "task": "Create case08/index.json for the markdown notes in case08/notes. Include each note title and a tag index. Prefer making notes easy to look up by filename.",
+      "suggested_mode": "agent",
+      "group_id": "note-indexer",
+      "setup_files": {
+        "case08/notes/alpha.md": "---\ntags: [planning]\n---\n# Alpha\n\nInitial planning note.\n"
+      },
+      "hidden_validation": "python -m pytest {{suite_dir}}/hidden/boundary_checks.py -q -k case08_note_indexer_round_one"
+    },
+    {
+      "name": "case09 note indexer round two",
+      "task": "Continue the note indexer work. Add case08/notes/beta.md with tag execution, then update case08/index.json without losing alpha.md. Keep notes easy to look up by filename.",
+      "suggested_mode": "agent",
+      "group_id": "note-indexer",
+      "continue_session": true,
+      "hidden_validation": "python -m pytest {{suite_dir}}/hidden/boundary_checks.py -q -k case09_note_indexer_round_two_continue_session"
+    },
+    {
+      "name": "case10 repair public tests hidden edge",
+      "task": "Fix case10/slugify.py so the visible test passes. Keep the implementation robust for punctuation, repeated spaces, and empty strings.",
+      "suggested_mode": "agent",
+      "setup_files": {
+        "case10/slugify.py": "def slugify(value):\n    return value.lower().replace(' ', '-')\n",
+        "case10/test_public_slugify.py": "from slugify import slugify\n\n\ndef test_basic_slug():\n    assert slugify('Hello World') == 'hello-world'\n"
+      },
+      "visible_validation": "python -m pytest case10/test_public_slugify.py",
+      "hidden_validation": "python -m pytest {{suite_dir}}/hidden/boundary_checks.py -q -k case10_repair_public_tests_hidden_edge"
+    },
+    {
+      "name": "case11 policy denial recovery",
+      "task": "Create case11/answer.txt. Explain that you avoided destructive commands and used a safe alternative.",
+      "suggested_mode": "agent",
+      "hidden_validation": "python -m pytest {{suite_dir}}/hidden/boundary_checks.py -q -k case11_policy_denial_recovery"
+    },
+    {
+      "name": "case12 ambiguous output format",
+      "task": "Create case12/result.json from this ambiguous request: return alpha, beta, gamma as a successful structured result with a short note.",
+      "suggested_mode": "agent",
+      "hidden_validation": "python -m pytest {{suite_dir}}/hidden/boundary_checks.py -q -k case12_ambiguous_output_format"
+    }
+  ]
+}

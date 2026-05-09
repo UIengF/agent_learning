@@ -10,7 +10,7 @@ from .connectors import list_connectors
 from .config import build_app_config
 from .context_explain import explain_context
 from .evidence_cache import EvidenceCache
-from .eval_harness import format_eval_dry_run
+from .eval_harness import format_eval_result, run_eval_suite
 from .memory import MemoryStore, SensitiveMemoryError
 from .permissions import WorkspacePolicy
 from .plan import CodingPlan
@@ -20,6 +20,7 @@ from .session_store import SessionStore
 from .skills import SkillRegistry
 from .tools import CodingTools
 from .trace import StructuredTraceWriter
+from .trace_viewer import serve_trace_viewer
 
 
 def _add_common_config_args(parser: argparse.ArgumentParser) -> None:
@@ -59,6 +60,17 @@ def build_parser() -> argparse.ArgumentParser:
     trace_show = trace_subparsers.add_parser("show", help="Show a session trace.")
     trace_show.add_argument("--session-id", required=True)
     trace_show.add_argument("--limit", type=int, default=40)
+    trace_serve = trace_subparsers.add_parser("serve", help="Serve the local trace Web UI.")
+    trace_serve.add_argument("--host", default="127.0.0.1")
+    trace_serve.add_argument("--port", type=int, default=8765)
+    trace_serve.add_argument("--open", action="store_true", dest="open_browser")
+    trace_serve.add_argument("--session-id", default=None)
+
+    web_parser = subparsers.add_parser("web", help="Serve the local multi-turn Web UI.")
+    web_parser.add_argument("--host", default="127.0.0.1")
+    web_parser.add_argument("--port", type=int, default=8765)
+    web_parser.add_argument("--open", action="store_true", dest="open_browser")
+    web_parser.add_argument("--session-id", default=None)
 
     config_parser = subparsers.add_parser("config", help="Config commands.")
     config_subparsers = config_parser.add_subparsers(dest="config_command", required=True)
@@ -108,7 +120,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     eval_parser = subparsers.add_parser("eval", help="Eval harness commands.")
     eval_subparsers = eval_parser.add_subparsers(dest="eval_command", required=True)
-    eval_run_parser = eval_subparsers.add_parser("run", help="Dry-run an eval suite.")
+    eval_run_parser = eval_subparsers.add_parser("run", help="Run an eval suite.")
     eval_run_parser.add_argument("--workspace", required=True)
     eval_run_parser.add_argument("--suite", required=True)
 
@@ -182,6 +194,19 @@ def _trace_show(args: argparse.Namespace) -> int:
     lines = trace_path.read_text(encoding="utf-8").splitlines()
     for line in lines[-max(1, args.limit) :]:
         print(line)
+    return 0
+
+
+def _trace_serve(args: argparse.Namespace) -> int:
+    config = build_app_config(env_file=args.env_file)
+    serve_trace_viewer(
+        config.harness.runtime_dir,
+        app_config=config,
+        host=args.host,
+        port=args.port,
+        open_browser=args.open_browser,
+        session_id=args.session_id,
+    )
     return 0
 
 
@@ -282,8 +307,10 @@ def _schedule_plan(args: argparse.Namespace) -> int:
 
 
 def _eval_run(args: argparse.Namespace) -> int:
-    print(format_eval_dry_run(args.workspace, args.suite))
-    return 0
+    config = build_app_config(env_file=args.env_file)
+    result = run_eval_suite(config, args.workspace, args.suite)
+    print(format_eval_result(result))
+    return 1 if result.has_failures else 0
 
 
 def _connectors_list() -> int:
@@ -321,6 +348,10 @@ def main(argv: list[str] | None = None) -> int:
         return _resume(args)
     if args.command == "trace" and args.trace_command == "show":
         return _trace_show(args)
+    if args.command == "trace" and args.trace_command == "serve":
+        return _trace_serve(args)
+    if args.command == "web":
+        return _trace_serve(args)
     if args.command == "config" and args.config_command == "inspect":
         return _config_inspect(args)
     if args.command == "repo" and args.repo_command == "map":
@@ -343,3 +374,7 @@ def main(argv: list[str] | None = None) -> int:
         return _text(args)
     parser.error("unknown command")
     return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
