@@ -324,6 +324,7 @@ def create_app(*, default_index_dir: str = "agent") -> FastAPI:
                 max_bytes=web_config.fetch_max_bytes,
                 max_chars=web_config.fetch_max_chars,
                 user_agent=web_config.user_agent,
+                redirect_validator=app.state.permission_policy.validate_web_fetch_url,
             )
         )
 

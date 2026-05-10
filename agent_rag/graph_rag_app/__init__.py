@@ -22,6 +22,7 @@ from .config import (
     HarnessConfig,
     IndexBuildConfig,
     JobConfig,
+    MetadataRerankConfig,
     ModelConfig,
     PermissionConfig,
     RetrievalConfig,
@@ -31,6 +32,7 @@ from .config import (
     build_app_config,
     parse_bool_env,
 )
+from .exceptions import EmbeddingError, ProviderError, SearchBackendError
 from .jobs import BackgroundJobManager, JobNotFound, JobRecord
 from .permissions import PermissionDenied, ToolPermissionPolicy
 from .research_plan import (
@@ -144,6 +146,7 @@ __all__ = [
     "DEFAULT_TOP_K",
     "EmbeddingBackend",
     "EmbeddingConfig",
+    "EmbeddingError",
     "FetchResult",
     "evaluate_retrieval_cases",
     "GenerationConfig",
@@ -162,9 +165,11 @@ __all__ = [
     "LoadSkillInput",
     "LoadSkillTool",
     "ModelConfig",
+    "MetadataRerankConfig",
     "PermissionConfig",
     "PermissionDenied",
     "PROMPT",
+    "ProviderError",
     "Retriever",
     "RetrievalConfig",
     "RetrievalRuntimeConfig",
@@ -183,6 +188,7 @@ __all__ = [
     "render_scholar_search_markdown",
     "save_scholar_search_markdown",
     "SearchResult",
+    "SearchBackendError",
     "SerpApiGoogleScholarBackend",
     "Skill",
     "SkillRegistry",

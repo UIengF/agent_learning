@@ -16,6 +16,7 @@ from urllib.parse import (
 )
 from urllib.request import Request, urlopen
 
+from .exceptions import SearchBackendError
 from .web_types import SearchHit
 
 _DDG_SEARCH_URL = "https://html.duckduckgo.com/html/?q={query}"
@@ -70,14 +71,6 @@ _HIGH_VALUE_THIRD_PARTY_DOMAINS = (
     "wired.com",
     "arstechnica.com",
 )
-
-
-class SearchBackendError(RuntimeError):
-    def __init__(self, code: str, *, provider: str, detail: str = "") -> None:
-        super().__init__(code)
-        self.code = code
-        self.provider = provider
-        self.detail = detail
 
 
 def parse_duckduckgo_html(html: str, top_k: int) -> list[SearchHit]:

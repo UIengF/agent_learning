@@ -1,19 +1,20 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Type
-from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, PrivateAttr
 
+from .agent_executor import ToolExecutor
+from .agent_policy import ToolPolicyEngine
+from .agent_reflection import ReflectionRecorder
 from .config import AppConfig, DEFAULT_TOP_K, build_app_config
 from .context_budget import ContextBudget
 from .context_builder import ContextBuildResult, build_context_messages
 from .context_metrics import format_context_metrics
-from .evidence_cache import build_evidence_cache, format_evidence_cache, lookup_cached_tool_result
+from .evidence_cache import build_evidence_cache, format_evidence_cache
 from .indexing import load_index
 from .permissions import build_permission_policy
 from .question_frame import QuestionFrame, build_question_frame, format_question_frame
@@ -23,7 +24,6 @@ from .scholar_search import build_scholar_search_service
 from .session_summary import build_session_summary, format_session_summary
 from .scholar_tools import ScholarSearchTool
 from .skills import LoadSkillTool, SkillRegistry
-from .sources import extract_sources_from_messages
 from .structured_trace import StructuredTraceWriter
 from .task_state import build_task_state, format_task_state
 from .token_estimation import HeuristicTokenEstimator, select_token_estimator
@@ -90,20 +90,6 @@ For comparison questions, cover similarities, differences, implementation detail
 When evidence is sufficient, synthesize it into a multi-paragraph answer instead of a terse summary.
 """
 
-REFLECTION_PROMPT_TEMPLATE = """\
-You just received tool results. First decide:
-1. What is already answered by the current evidence?
-2. What information is still missing to complete the task?
-3. What is the smallest necessary next step?
-
-If the current evidence is sufficient, answer directly and do not call another tool.
-If the evidence is insufficient, make the next query or fetch step more specific.
-Do not treat unsupported facts as known facts.
-If search snippets hint at needed details on a page, fetch the page before relying on those details.
-If multiple answers, dates, or scenarios are plausible, explain that clearly.
-"""
-
-
 if LANGGRAPH_AVAILABLE:
 
     class AgentState(TypedDict):
@@ -152,33 +138,6 @@ class LocalRAGRetrieveTool(BaseTool):
             "results": [asdict(item) for item in results],
         }
         return json.dumps(payload, ensure_ascii=False)
-
-
-@dataclass(frozen=True)
-class ReflectionRecord:
-    stage: str
-    question: str
-    entities: tuple[str, ...]
-    evidence_sufficiency: str
-    missing_information: tuple[str, ...]
-    recommended_next_action: str
-    latest_tool_name: str
-    latest_tool_result_count: int | None
-    cached_web_queries: tuple[str, ...]
-    cached_fetched_urls: tuple[str, ...]
-    failed_web_fetch_domains: tuple[str, ...]
-    llm_decision: str
-    tool_calls: tuple[dict[str, Any], ...]
-
-
-@dataclass(frozen=True)
-class LoggedQuestionFrame:
-    question: str
-    target_entities: tuple[str, ...]
-    task_intent: str
-    focus_dimensions: tuple[str, ...]
-    evidence_scope: dict[str, bool]
-    success_criteria: tuple[str, ...]
 
 
 class Agent:
@@ -238,6 +197,24 @@ class Agent:
         self._ensure_log_file = ensure_log_file
         self._append_log = append_log
         self._shorten_text = shorten_text
+        self.tool_policy = ToolPolicyEngine(append_log=self._append)
+        self.tool_executor = ToolExecutor(
+            tools=self.tools,
+            tool_policy=self.tool_policy,
+            append_log=self._append,
+            trace=self._trace,
+            shorten=self._shorten,
+            increment_tool_call_count=self._increment_tool_call_count,
+        )
+        self.reflection_recorder = ReflectionRecorder(
+            tool_policy=self.tool_policy,
+            append=self._append,
+            append_json=self._append_json,
+            shorten=self._shorten,
+            build_task_state=self._build_task_state,
+            build_evidence_cache=self._build_evidence_cache,
+            get_current_round=lambda: self.current_round,
+        )
 
         if self.base_model is not None and tools is not None and LANGGRAPH_AVAILABLE:
             graph = StateGraph(AgentState)
@@ -257,6 +234,49 @@ class Agent:
         if self._ensure_log_file is not None:
             self._ensure_log_file(self.log_path)
 
+    def __getattr__(self, name: str) -> Any:
+        # Policy engine methods
+        policy_methods = {
+            "_remove_site_filter",
+            "_parse_tool_payload",
+            "_url_domain",
+            "_message_content",
+            "_tool_name",
+            "_failed_web_fetch_urls",
+            "_failed_web_fetch_domains",
+            "_format_fetch_failure_guidance",
+            "_official_search_urls",
+            "_ranked_web_search_urls",
+            "_web_fetch_fallback_urls",
+            "_latest_tool_snapshot",
+            "_current_question",
+            "_format_scholar_title_guardrail",
+            "_apply_official_first_fetch_policy",
+            "_apply_failed_domain_search_policy",
+        }
+        if name in policy_methods:
+            return getattr(self.tool_policy, name)
+
+        # Executor static methods
+        executor_static = {
+            "_tool_limit_message_text": "tool_limit_message_text",
+            "_finalize_without_tool_calls": "finalize_without_tool_calls",
+        }
+        if name in executor_static:
+            return getattr(ToolExecutor, executor_static[name])
+
+        # Reflection methods
+        reflection_methods = {
+            "build_reflection_prompt": "build_reflection_prompt",
+            "log_round_header": "log_round_header",
+            "_log_question_frame": "log_question_frame",
+            "_build_reflection_record": "build_reflection_record",
+            "_log_reflection_record": "log_reflection_record",
+        }
+        if name in reflection_methods:
+            return getattr(self.reflection_recorder, reflection_methods[name])
+        raise AttributeError(f"{self.__class__.__name__!s} object has no attribute {name!r}")
+
     @staticmethod
     def _message_role(message: AnyMessage | dict) -> str:
         if isinstance(message, dict):
@@ -265,16 +285,6 @@ class Agent:
         if message_type:
             return str(message_type)
         return message.__class__.__name__
-
-    @staticmethod
-    def _message_content(message: AnyMessage | dict) -> str:
-        if isinstance(message, dict):
-            content = message.get("content", "")
-        else:
-            content = getattr(message, "content", "")
-        if isinstance(content, str):
-            return content
-        return str(content)
 
     def _append(self, text: str) -> None:
         if self._append_log is not None:
@@ -287,14 +297,15 @@ class Agent:
         if self.trace_writer is not None:
             self.trace_writer.append(event_type, payload)
 
+    def _increment_tool_call_count(self) -> int:
+        self.tool_call_count += 1
+        return self.tool_call_count
+
     def _shorten(self, text: str, max_len: int) -> str:
         if self._shorten_text is None:
             compact = " ".join(text.split())
             return compact if len(compact) <= max_len else compact[: max_len - 3] + "..."
         return self._shorten_text(text, max_len)
-
-    def log_round_header(self, title: str) -> None:
-        self._append(f"===== Round {self.current_round} =====\n{title}")
 
     @staticmethod
     def _is_tool_message(message: AnyMessage | dict) -> bool:
@@ -329,11 +340,6 @@ class Agent:
                 rounds += 1
             previous_was_tool = is_tool
         return rounds
-
-    def _tool_name(self, message: AnyMessage | dict) -> str:
-        if isinstance(message, dict):
-            return str(message.get("name", "tool"))
-        return str(getattr(message, "name", "tool"))
 
     def _trim_recent_messages(
         self,
@@ -395,27 +401,27 @@ class Agent:
     def _build_session_summary(self, messages: list[AnyMessage | dict]):
         return build_session_summary(
             messages,
-            message_content=self._message_content,
+            message_content=self.tool_policy._message_content,
             message_role=self._message_role,
             is_tool_message=self._is_tool_message,
             is_human_message=self._is_human_message,
-            tool_name=self._tool_name,
+            tool_name=self.tool_policy._tool_name,
             shorten=self._shorten,
         )
 
     def _build_task_state(self, messages: list[AnyMessage | dict]):
         return build_task_state(
             messages,
-            message_content=self._message_content,
+            message_content=self.tool_policy._message_content,
             is_tool_message=self._is_tool_message,
             is_human_message=self._is_human_message,
-            tool_name=self._tool_name,
+            tool_name=self.tool_policy._tool_name,
         )
 
     def _extract_question_text(self, messages: list[AnyMessage | dict]) -> str:
         for message in reversed(messages):
             if self._is_human_message(message):
-                content = self._message_content(message).strip()
+                content = self.tool_policy._message_content(message).strip()
                 if content:
                     return content
         return ""
@@ -445,51 +451,13 @@ class Agent:
             return build_question_frame(question)
         return None
 
-    def _log_question_frame(self, question_frame: QuestionFrame | None) -> None:
-        if question_frame is None:
-            return
-        payload = LoggedQuestionFrame(
-            question=question_frame.question,
-            target_entities=question_frame.target_entities,
-            task_intent=question_frame.task_intent,
-            focus_dimensions=question_frame.focus_dimensions,
-            evidence_scope=asdict(question_frame.evidence_scope),
-            success_criteria=question_frame.success_criteria,
-        )
-        self._append_json("Question frame", asdict(payload))
-
     def _build_evidence_cache(self, messages: list[AnyMessage | dict]):
         return build_evidence_cache(
             messages,
-            message_content=self._message_content,
+            message_content=self.tool_policy._message_content,
             is_tool_message=self._is_tool_message,
-            tool_name=self._tool_name,
+            tool_name=self.tool_policy._tool_name,
         )
-
-    @staticmethod
-    def _tool_limit_message_text() -> str:
-        return (
-            "The tool call limit has been reached. Please answer using the available evidence "
-            "and clearly state any uncertainty."
-        )
-
-    def _finalize_without_tool_calls(self, message: Any, content: str) -> Any:
-        try:
-            setattr(message, "content", content)
-            setattr(message, "tool_calls", [])
-            return message
-        except Exception:
-            pass
-
-        message_type = message.__class__
-        try:
-            return message_type(content=content)
-        except Exception:
-            pass
-
-        if HumanMessage is not None:
-            return HumanMessage(content=content)
-        return {"role": "assistant", "content": content}
 
     def _answer_after_tool_limit(
         self,
@@ -500,405 +468,18 @@ class Agent:
         completed_rounds: int,
         scholar_title_guardrail: str | None = None,
     ) -> Any:
-        final_instruction = (
-            f"{limit_message}\n\n"
-            "Do not call any more tools. Write the final answer now using only the evidence "
-            "already present in the conversation. If the evidence is incomplete, state the "
-            "uncertainty clearly."
+        return self.tool_executor.answer_after_tool_limit(
+            messages=messages,
+            trigger_message=trigger_message,
+            limit_message=limit_message,
+            completed_rounds=completed_rounds,
+            final_model=self.base_model or self.model,
+            scholar_title_guardrail=scholar_title_guardrail,
         )
-        if scholar_title_guardrail:
-            final_instruction = final_instruction + "\n\n" + scholar_title_guardrail
-        final_messages = list(messages)
-        if HumanMessage is not None:
-            final_messages.append(HumanMessage(content=final_instruction))
-        else:
-            final_messages.append({"role": "human", "content": final_instruction})
-
-        final_model = self.base_model or self.model
-        try:
-            final_message = final_model.invoke(final_messages)
-        except Exception as exc:
-            self._append(
-                "LLM decision: failed to synthesize final answer after tool limit.\n"
-                f"Completed rounds: {completed_rounds}\n"
-                f"Error: {exc}"
-            )
-            return self._finalize_without_tool_calls(trigger_message, limit_message)
-
-        final_content = self._message_content(final_message).strip() or limit_message
-        self._append(
-            "LLM decision: synthesize final answer after tool limit.\n"
-            f"Completed rounds: {completed_rounds}\n"
-            f"Output summary:\n{self._shorten(final_content, 800)}"
-        )
-        self._append(f"LLM raw output:\n{self._shorten(final_content, 1200)}")
-        return self._finalize_without_tool_calls(final_message, final_content)
-
-    def _replace_tool_calls(
-        self,
-        message: Any,
-        tool_calls: list[dict[str, Any]],
-        *,
-        content: str | None = None,
-    ) -> Any:
-        updated_content = self._message_content(message) if content is None else content
-        try:
-            setattr(message, "content", updated_content)
-            setattr(message, "tool_calls", tool_calls)
-            return message
-        except Exception:
-            pass
-
-        try:
-            return message.__class__(content=updated_content, tool_calls=tool_calls)
-        except Exception:
-            pass
-
-        return {"role": "assistant", "content": updated_content, "tool_calls": tool_calls}
-
-    @staticmethod
-    def _parse_tool_payload(content: str) -> dict[str, Any]:
-        try:
-            payload = json.loads(content)
-        except Exception:
-            return {}
-        return payload if isinstance(payload, dict) else {}
-
-    def _failed_web_fetch_urls(self, state: AgentState) -> set[str]:
-        failed_urls: set[str] = set()
-        for message in self._current_call_messages(state):
-            if not self._is_tool_message(message):
-                continue
-            if self._tool_name(message) != "web_fetch":
-                continue
-            payload = self._parse_tool_payload(self._message_content(message))
-            if payload.get("error") != "tool_execution_failed":
-                continue
-            tool_args = payload.get("tool_args", {})
-            if not isinstance(tool_args, dict):
-                continue
-            url = str(tool_args.get("url", "")).strip()
-            if url:
-                failed_urls.add(url)
-        return failed_urls
-
-    @staticmethod
-    def _url_domain(url: str) -> str:
-        try:
-            parsed = urlparse(url)
-        except Exception:
-            return ""
-        return (parsed.netloc or "").lower()
-
-    def _failed_web_fetch_domains(self, state: AgentState) -> list[str]:
-        domains: list[str] = []
-        for url in sorted(self._failed_web_fetch_urls(state)):
-            domain = self._url_domain(url)
-            if domain and domain not in domains:
-                domains.append(domain)
-        return domains
-
-    def _format_fetch_failure_guidance(self, state: AgentState) -> str | None:
-        failed_domains = self._failed_web_fetch_domains(state)
-        if not failed_domains:
-            return None
-
-        lines = [
-            "Fetch failure guidance:",
-            "failed_fetch_domains: " + ", ".join(failed_domains),
-            (
-                "If evidence is still missing, broaden the next web_search to official or primary "
-                "sources from the same organization or adjacent documentation ecosystem."
-            ),
-            "Do not keep searching only within a domain whose pages failed to fetch.",
-        ]
-        for domain in failed_domains:
-            lines.append(
-                f"avoid repeating site:{domain} unless the user explicitly requires that domain"
-            )
-        lines.append("Keep the target entities and focus terms in the query.")
-        return "\n".join(lines)
-
-    def _official_search_urls(self, state: AgentState) -> list[str]:
-        for message in reversed(self._current_call_messages(state)):
-            if not self._is_tool_message(message):
-                continue
-            if self._tool_name(message) != "web_search":
-                continue
-
-            payload = self._parse_tool_payload(self._message_content(message))
-            urls: list[str] = []
-            results = payload.get("results", [])
-            if isinstance(results, list):
-                for result in results:
-                    if not isinstance(result, dict):
-                        continue
-                    if not result.get("is_official"):
-                        continue
-                    url = str(result.get("url", "")).strip()
-                    if url:
-                        urls.append(url)
-
-            debug = payload.get("debug", {})
-            if isinstance(debug, dict):
-                official_urls = debug.get("official_urls", [])
-                if isinstance(official_urls, list):
-                    for item in official_urls:
-                        url = str(item).strip()
-                        if url and url not in urls:
-                            urls.append(url)
-            return urls
-        return []
-
-    def _ranked_web_search_urls(self, state: AgentState) -> list[str]:
-        ranked: list[tuple[int, int, int, str]] = []
-        seen: set[str] = set()
-        for search_order, message in enumerate(reversed(self._current_call_messages(state))):
-            if not self._is_tool_message(message):
-                continue
-            if self._tool_name(message) != "web_search":
-                continue
-
-            payload = self._parse_tool_payload(self._message_content(message))
-            results = payload.get("results", [])
-            if not isinstance(results, list):
-                continue
-
-            for index, result in enumerate(results):
-                if not isinstance(result, dict):
-                    continue
-                url = str(result.get("url", "")).strip()
-                if not url or url in seen:
-                    continue
-                seen.add(url)
-                try:
-                    rank = int(result.get("rank", index + 1))
-                except (TypeError, ValueError):
-                    rank = index + 1
-                official_priority = 0 if result.get("is_official") else 1
-                ranked.append((official_priority, search_order, rank, url))
-
-        ranked.sort(key=lambda item: (item[0], item[1], item[2]))
-        return [url for _, _, _, url in ranked]
-
-    def _web_fetch_fallback_urls(self, state: AgentState, original_url: str) -> list[str]:
-        failed_urls = self._failed_web_fetch_urls(state) | {original_url}
-        urls: list[str] = []
-        for url in self._ranked_web_search_urls(state):
-            if url in failed_urls or url in urls:
-                continue
-            urls.append(url)
-        return urls
-
-    def _latest_tool_snapshot(self, state: AgentState) -> tuple[str, dict[str, Any]]:
-        for message in reversed(self._current_call_messages(state)):
-            if not self._is_tool_message(message):
-                continue
-            return self._tool_name(message), self._parse_tool_payload(
-                self._message_content(message)
-            )
-        return "", {}
-
-    def _build_reflection_record(
-        self,
-        state: AgentState,
-        *,
-        llm_decision: str,
-        tool_calls: list[dict[str, Any]] | None = None,
-    ) -> ReflectionRecord | None:
-        task_state = self._build_task_state(list(state["messages"]))
-        if task_state is None:
-            return None
-        evidence_cache = self._build_evidence_cache(list(state["messages"]))
-        latest_tool_name, latest_tool_payload = self._latest_tool_snapshot(state)
-        latest_tool_result_count = latest_tool_payload.get("result_count")
-        if not isinstance(latest_tool_result_count, int):
-            latest_tool_result_count = None
-        serialized_calls = tuple(
-            {
-                "name": str(tool_call.get("name", "")),
-                "args": dict(tool_call.get("args", {})),
-            }
-            for tool_call in (tool_calls or [])
-        )
-        return ReflectionRecord(
-            stage="post_tool_reflection",
-            question=task_state.question,
-            entities=task_state.entities,
-            evidence_sufficiency=task_state.evidence_sufficiency,
-            missing_information=task_state.missing_information,
-            recommended_next_action=task_state.next_action,
-            latest_tool_name=latest_tool_name,
-            latest_tool_result_count=latest_tool_result_count,
-            cached_web_queries=tuple(sorted(evidence_cache.web_results_by_query.keys())),
-            cached_fetched_urls=tuple(sorted(evidence_cache.fetched_pages_by_url.keys())),
-            failed_web_fetch_domains=tuple(self._failed_web_fetch_domains(state)),
-            llm_decision=llm_decision,
-            tool_calls=serialized_calls,
-        )
-
-    def _log_reflection_record(
-        self,
-        state: AgentState,
-        *,
-        llm_decision: str,
-        tool_calls: list[dict[str, Any]] | None = None,
-    ) -> None:
-        record = self._build_reflection_record(
-            state,
-            llm_decision=llm_decision,
-            tool_calls=tool_calls,
-        )
-        if record is None:
-            return
-        self._append_json("Reflection result", asdict(record))
-
-    def _apply_official_first_fetch_policy(
-        self,
-        state: AgentState,
-        message: Any,
-        tool_calls: list[dict[str, Any]],
-    ) -> tuple[Any, list[dict[str, Any]]]:
-        official_urls = self._official_search_urls(state)
-        if not official_urls:
-            return message, tool_calls
-        failed_urls = self._failed_web_fetch_urls(state)
-        preferred_url = next((url for url in official_urls if url not in failed_urls), None)
-        if not preferred_url:
-            return message, tool_calls
-
-        first_fetch_index: int | None = None
-        official_fetch_present = False
-        updated_tool_calls: list[dict[str, Any]] = []
-        for index, tool_call in enumerate(tool_calls):
-            copied_call = dict(tool_call)
-            copied_args = dict(tool_call.get("args", {}))
-            copied_call["args"] = copied_args
-            updated_tool_calls.append(copied_call)
-
-            if copied_call.get("name") != "web_fetch":
-                continue
-
-            url = str(copied_args.get("url", "")).strip()
-            if url == preferred_url:
-                official_fetch_present = True
-            elif first_fetch_index is None:
-                first_fetch_index = index
-
-        if official_fetch_present or first_fetch_index is None:
-            return message, tool_calls
-
-        original_url = str(updated_tool_calls[first_fetch_index]["args"].get("url", "")).strip()
-        updated_tool_calls[first_fetch_index]["args"]["url"] = preferred_url
-        self._append(
-            "Official-first fetch policy\n"
-            f"Rewrote web_fetch URL from {original_url} to {preferred_url}"
-        )
-        return self._replace_tool_calls(message, updated_tool_calls), updated_tool_calls
-
-    def _current_question(self, state: AgentState) -> str:
-        question = ""
-        for message in self._current_call_messages(state):
-            if self._is_human_message(message):
-                content = self._message_content(message).strip()
-                if content:
-                    question = content
-        return question
-
-    @staticmethod
-    def _remove_site_filter(query: str, domain: str) -> str:
-        pattern = re.compile(rf"(?i)\bsite:{re.escape(domain)}\b")
-        updated = pattern.sub(" ", query)
-        updated = re.sub(r"\s+", " ", updated).strip()
-        updated = re.sub(r"(?i)^(OR|AND)\s+", "", updated).strip()
-        updated = re.sub(r"(?i)\s+(OR|AND)$", "", updated).strip()
-        return updated
-
-    def _apply_failed_domain_search_policy(
-        self,
-        state: AgentState,
-        message: Any,
-        tool_calls: list[dict[str, Any]],
-    ) -> tuple[Any, list[dict[str, Any]]]:
-        failed_domains = self._failed_web_fetch_domains(state)
-        if not failed_domains:
-            return message, tool_calls
-
-        question = self._current_question(state).lower()
-        updated_tool_calls: list[dict[str, Any]] = []
-        changed = False
-        for tool_call in tool_calls:
-            copied_call = dict(tool_call)
-            copied_args = dict(tool_call.get("args", {}))
-            copied_call["args"] = copied_args
-            updated_tool_calls.append(copied_call)
-
-            if copied_call.get("name") != "web_search":
-                continue
-            query = str(copied_args.get("query", "")).strip()
-            if not query:
-                continue
-            updated_query = query
-            removed_domains: list[str] = []
-            for domain in failed_domains:
-                if domain.lower() in question:
-                    continue
-                next_query = self._remove_site_filter(updated_query, domain)
-                if next_query != updated_query:
-                    updated_query = next_query
-                    removed_domains.append(domain)
-            if removed_domains and updated_query:
-                copied_args["query"] = updated_query
-                changed = True
-                self._append(
-                    "Failed-domain search policy\n"
-                    f"Removed site filters for failed fetch domains: {', '.join(removed_domains)}\n"
-                    f"Original query: {query}\n"
-                    f"Updated query: {updated_query}"
-                )
-
-        if not changed:
-            return message, tool_calls
-        return self._replace_tool_calls(message, updated_tool_calls), updated_tool_calls
 
     def exists_action(self, state: AgentState):
         result = state["messages"][-1]
         return len(getattr(result, "tool_calls", [])) > 0
-
-    @staticmethod
-    def build_reflection_prompt(tool_results: list[AnyMessage | dict]) -> str:
-        result_blocks = []
-        for index, message in enumerate(tool_results, start=1):
-            if isinstance(message, dict):
-                name = str(message.get("name", "tool"))
-                content = str(message.get("content", ""))
-            else:
-                name = str(getattr(message, "name", "tool"))
-                content = str(getattr(message, "content", ""))
-            result_blocks.append(f"Tool result {index} ({name}):\n{content}")
-        return REFLECTION_PROMPT_TEMPLATE + "\n\n" + "\n\n".join(result_blocks)
-
-    def _format_scholar_title_guardrail(self, messages: list[AnyMessage | dict]) -> str | None:
-        sources = extract_sources_from_messages(messages)
-        scholar_titles: list[str] = []
-        for source in sources:
-            if str(source.get("source_type", "") or "") != "scholar":
-                continue
-            title = str(source.get("title", "") or "").strip()
-            if title:
-                scholar_titles.append(title)
-
-        if not scholar_titles:
-            return None
-
-        lines = [
-            "Scholar title guardrail:",
-            "Only cite or discuss papers whose titles appear in the final source list below.",
-            "If a paper is not in this list, do not mention it by title, author, venue, or year.",
-            "Allowed paper titles:",
-        ]
-        lines.extend(f"- {title}" for title in scholar_titles)
-        return "\n".join(lines)
 
     def build_context_result(self, state: AgentState) -> ContextBuildResult:
         trimmed_messages, base_messages = self._select_recent_turns(list(state["messages"]))
@@ -947,10 +528,12 @@ class Agent:
         if tool_results:
             tool_results.reverse()
             reflection_text = self.build_reflection_prompt(tool_results)
-            fetch_failure_guidance = self._format_fetch_failure_guidance(state)
+            fetch_failure_guidance = self.tool_policy._format_fetch_failure_guidance(state)
             if fetch_failure_guidance:
                 reflection_text = reflection_text + "\n\n" + fetch_failure_guidance
-            scholar_title_guardrail = self._format_scholar_title_guardrail(list(state["messages"]))
+            scholar_title_guardrail = self.tool_policy._format_scholar_title_guardrail(
+                list(state["messages"])
+            )
             if scholar_title_guardrail:
                 reflection_text = reflection_text + "\n\n" + scholar_title_guardrail
 
@@ -970,7 +553,7 @@ class Agent:
                 max_tokens=self.max_context_tokens,
             ),
             shorten=self._shorten,
-            message_content=self._message_content,
+            message_content=self.tool_policy._message_content,
             message_role=self._message_role,
             token_estimator=self.token_estimator,
             live_messages_compression_enabled=self.live_messages_compression_enabled,
@@ -992,10 +575,11 @@ class Agent:
         last_message = state["messages"][-1]
         if ToolMessage is not None and isinstance(last_message, ToolMessage):
             self._append(
-                "Reflection step\nThe model will decide whether to continue using tools or answer directly."
+                "Reflection step\n"
+                "The model will decide whether to continue using tools or answer directly."
             )
             reflection_log_prompt = self.build_reflection_prompt([last_message])
-            fetch_failure_guidance = self._format_fetch_failure_guidance(state)
+            fetch_failure_guidance = self.tool_policy._format_fetch_failure_guidance(state)
             if fetch_failure_guidance:
                 reflection_log_prompt = reflection_log_prompt + "\n\n" + fetch_failure_guidance
             self._append(f"Reflection prompt\n{self._shorten(reflection_log_prompt, 1200)}")
@@ -1005,7 +589,7 @@ class Agent:
         messages = context_result.messages
         self.model_call_count += 1
         role = self._message_role(last_message)
-        content = self._shorten(self._message_content(last_message), 800)
+        content = self._shorten(self.tool_policy._message_content(last_message), 800)
         if self.model_call_count == 1:
             self.current_round = 1
             self.log_round_header("Start analyzing the user question")
@@ -1025,7 +609,7 @@ class Agent:
             )
         self._append(f"LLM input source: {role}\nLLM input content:\n{content}")
         message = self.model.invoke(messages)
-        response_text = self._message_content(message)
+        response_text = self.tool_policy._message_content(message)
         tool_calls = getattr(message, "tool_calls", [])
         completed_rounds = self._tool_rounds_in_current_call(state)
         if tool_calls and completed_rounds >= self.max_rounds:
@@ -1047,7 +631,7 @@ class Agent:
                         trigger_message=message,
                         limit_message=limited_content,
                         completed_rounds=completed_rounds,
-                        scholar_title_guardrail=self._format_scholar_title_guardrail(
+                        scholar_title_guardrail=self.tool_policy._format_scholar_title_guardrail(
                             list(state["messages"])
                         ),
                     )
@@ -1055,10 +639,10 @@ class Agent:
             }
 
         if tool_calls:
-            message, tool_calls = self._apply_failed_domain_search_policy(
+            message, tool_calls = self.tool_policy._apply_failed_domain_search_policy(
                 state, message, tool_calls
             )
-            message, tool_calls = self._apply_official_first_fetch_policy(
+            message, tool_calls = self.tool_policy._apply_official_first_fetch_policy(
                 state, message, tool_calls
             )
 
@@ -1100,104 +684,8 @@ class Agent:
 
     def take_action(self, state: AgentState):
         state = self._sync_derived_state(state)
-        tool_calls = state["messages"][-1].tool_calls
         evidence_cache = self._build_evidence_cache(list(state["messages"]))
-        results = []
-        for tool_call in tool_calls:
-            self.tool_call_count += 1
-            tool_args = tool_call.get("args", {})
-            serialized_args = json.dumps(tool_args, ensure_ascii=False, sort_keys=True)
-            self._append(f"Tool call\nName: {tool_call['name']}\nArgs: {serialized_args}")
-            self._trace(
-                "tool_call",
-                {
-                    "tool_call_count": self.tool_call_count,
-                    "name": tool_call["name"],
-                    "args": tool_args,
-                },
-            )
-            cached_result = lookup_cached_tool_result(
-                evidence_cache,
-                tool_name=tool_call["name"],
-                tool_args=tool_args,
-            )
-            if cached_result is not None:
-                self._append(f"Tool cache hit\nName: {tool_call['name']}")
-                self._trace(
-                    "tool_cache_hit",
-                    {
-                        "tool_call_count": self.tool_call_count,
-                        "name": tool_call["name"],
-                        "args": tool_args,
-                    },
-                )
-                result = cached_result
-            elif tool_call["name"] not in self.tools:
-                result = json.dumps(
-                    {
-                        "error": "invalid_tool",
-                        "tool_name": tool_call["name"],
-                        "tool_args": tool_args,
-                    },
-                    ensure_ascii=False,
-                )
-            else:
-                try:
-                    result = self.tools[tool_call["name"]].invoke(tool_args)
-                except Exception as exc:
-                    result = json.dumps(
-                        {
-                            "error": "tool_execution_failed",
-                            "tool_name": tool_call["name"],
-                            "tool_args": tool_args,
-                            "error_type": exc.__class__.__name__,
-                            "message": str(exc),
-                        },
-                        ensure_ascii=False,
-                    )
-                    if tool_call["name"] == "web_fetch":
-                        original_url = str(tool_args.get("url", "")).strip()
-                        for fallback_url in self._web_fetch_fallback_urls(state, original_url):
-                            fallback_args = dict(tool_args)
-                            fallback_args["url"] = fallback_url
-                            cached_fallback = lookup_cached_tool_result(
-                                evidence_cache,
-                                tool_name="web_fetch",
-                                tool_args=fallback_args,
-                            )
-                            self._append(
-                                "Web fetch fallback\n"
-                                f"Original URL failed: {original_url}\n"
-                                f"Trying fallback URL: {fallback_url}"
-                            )
-                            if cached_fallback is not None:
-                                self._append("Tool cache hit\nName: web_fetch")
-                                result = cached_fallback
-                                break
-                            try:
-                                result = self.tools["web_fetch"].invoke(fallback_args)
-                                break
-                            except Exception as fallback_exc:
-                                self._append(
-                                    "Web fetch fallback failed\n"
-                                    f"URL: {fallback_url}\n"
-                                    f"{fallback_exc.__class__.__name__}: {fallback_exc}"
-                                )
-            self._append(f"Tool result\n{str(result)}")
-            self._trace(
-                "tool_result",
-                {
-                    "tool_call_count": self.tool_call_count,
-                    "name": tool_call["name"],
-                    "result_preview": self._shorten(str(result), 800),
-                },
-            )
-            results.append(
-                ToolMessage(
-                    tool_call_id=tool_call["id"], name=tool_call["name"], content=str(result)
-                )
-            )
-        return {"messages": results}
+        return self.tool_executor.take_action(state, evidence_cache)
 
 
 def build_agent(
@@ -1228,7 +716,11 @@ def build_agent(
     )
     tools = [
         LocalRAGRetrieveTool(
-            store=load_index(index_dir, keyword_weight=config.retrieval.keyword_weight),
+            store=load_index(
+                index_dir,
+                keyword_weight=config.retrieval.keyword_weight,
+                metadata_rerank_config=config.metadata_rerank,
+            ),
             min_evidence_score=config.generation.min_evidence_score,
         )
     ]
@@ -1247,6 +739,7 @@ def build_agent(
                 max_bytes=config.web.fetch_max_bytes,
                 max_chars=config.web.fetch_max_chars,
                 user_agent=config.web.user_agent,
+                redirect_validator=permission_policy.validate_web_fetch_url,
             )
 
         tools.extend(

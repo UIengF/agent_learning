@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from html.parser import HTMLParser
 import socket
 import time
@@ -71,6 +72,7 @@ def fetch_url(
     max_bytes: int,
     max_chars: int,
     user_agent: str,
+    redirect_validator: Callable[[str], object] | None = None,
 ) -> FetchResult:
     if max_bytes < 0:
         raise ValueError("max_bytes must be non-negative")
@@ -82,6 +84,8 @@ def fetch_url(
         try:
             with opener.open(request, timeout=timeout_seconds) as response:
                 final_url = response.geturl()
+                if redirect_validator is not None and final_url != url:
+                    redirect_validator(final_url)
                 status_code = response.status
                 content_type = response.headers.get_content_type()
                 if content_type != "text/html":

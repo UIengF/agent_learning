@@ -47,6 +47,14 @@ def parse_bool_env(name: str, default: bool = False) -> bool:
 def load_env_file(path: str | Path | None = None) -> None:
     env_path = Path(path) if path is not None else PROJECT_ENV_PATH
     if not env_path.is_file():
+        import sys as _sys
+        print(
+            f"[graph_rag] WARNING: No .env file found at {env_path}. "
+            f"Using defaults — model={DEFAULT_MODEL_NAME}, "
+            f"api_base={DEFAULT_API_BASE}. "
+            f"Copy .env.example to .env to customize.",
+            file=_sys.stderr,
+        )
         return
     for raw_line in env_path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
@@ -98,12 +106,22 @@ class RetrievalConfig:
 
 
 @dataclass(frozen=True)
+class MetadataRerankConfig:
+    source_path_token_bonus: float = 0.40
+    title_token_bonus: float = 0.30
+    section_title_token_bonus: float = 0.20
+    max_bonus: float = 2.40
+    authority_boost: float = 0.50
+
+
+@dataclass(frozen=True)
 class IndexBuildConfig:
     chunk_size: int = DEFAULT_CHUNK_SIZE
     chunk_overlap: int = DEFAULT_CHUNK_OVERLAP
     keyword_weight: float = DEFAULT_KEYWORD_WEIGHT
     dense_dim: int = 256
     index_version: int = DEFAULT_INDEX_VERSION
+    force_rebuild: bool = False
 
 
 @dataclass(frozen=True)
@@ -183,8 +201,8 @@ class HarnessConfig:
 @dataclass(frozen=True)
 class PermissionConfig:
     allowed_index_roots: str = "."
-    allow_local_web_fetch: bool = True
-    allow_private_web_fetch: bool = True
+    allow_local_web_fetch: bool = False
+    allow_private_web_fetch: bool = False
 
 
 @dataclass(frozen=True)
@@ -219,6 +237,7 @@ class AppConfig:
     harness: HarnessConfig = field(default_factory=HarnessConfig)
     permissions: PermissionConfig = field(default_factory=PermissionConfig)
     jobs: JobConfig = field(default_factory=JobConfig)
+    metadata_rerank: MetadataRerankConfig = field(default_factory=MetadataRerankConfig)
 
 
 def _build_model_config() -> ModelConfig:
@@ -244,6 +263,29 @@ def _build_retrieval_config() -> RetrievalConfig:
         keyword_weight=_parse_float(
             os.getenv("RAG_KEYWORD_WEIGHT"),
             DEFAULT_KEYWORD_WEIGHT,
+        ),
+    )
+
+
+def _build_metadata_rerank_config() -> MetadataRerankConfig:
+    defaults = MetadataRerankConfig()
+    return MetadataRerankConfig(
+        source_path_token_bonus=_parse_float(
+            os.getenv("RAG_METADATA_SOURCE_PATH_TOKEN_BONUS"),
+            defaults.source_path_token_bonus,
+        ),
+        title_token_bonus=_parse_float(
+            os.getenv("RAG_METADATA_TITLE_TOKEN_BONUS"),
+            defaults.title_token_bonus,
+        ),
+        section_title_token_bonus=_parse_float(
+            os.getenv("RAG_METADATA_SECTION_TITLE_TOKEN_BONUS"),
+            defaults.section_title_token_bonus,
+        ),
+        max_bonus=_parse_float(os.getenv("RAG_METADATA_MAX_BONUS"), defaults.max_bonus),
+        authority_boost=_parse_float(
+            os.getenv("RAG_METADATA_AUTHORITY_BOOST"),
+            defaults.authority_boost,
         ),
     )
 
@@ -462,6 +504,7 @@ def build_app_config(
         model=_build_model_config(),
         embedding=_build_embedding_config(),
         retrieval=_build_retrieval_config(),
+        metadata_rerank=_build_metadata_rerank_config(),
         web=_build_web_config(),
         scholar=_build_scholar_config(),
         context=_build_context_config(),

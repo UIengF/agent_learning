@@ -11,8 +11,9 @@ from typing import Any, Mapping, Protocol, Sequence
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
-from .config import DEFAULT_KEYWORD_WEIGHT, DEFAULT_TOP_K
+from .config import DEFAULT_KEYWORD_WEIGHT, DEFAULT_TOP_K, MetadataRerankConfig
 from .corpus import chunk_text, load_corpus_text, tokenize
+from .exceptions import EmbeddingError
 from .query_rewrite import _query_focus_tokens, expand_query_for_retrieval
 
 
@@ -85,6 +86,14 @@ _METADATA_STOPWORDS = {
     "are",
 }
 _HEADER_VALUE_PATTERN = re.compile(r"(?im)^\[(SOURCE|TITLE|SECTION):\s*(.*?)\]\s*$")
+_OFFICIAL_SOURCE_PATTERNS = (
+    "github.com",
+    "docs.",
+    ".org",
+    ".edu",
+    "developer.",
+    "developers.",
+)
 
 def _extract_header_metadata(text: str) -> dict[str, str]:
     metadata: dict[str, str] = {}
@@ -101,7 +110,15 @@ def _normalized_metadata_fields(result: SearchResult) -> tuple[str, str, str]:
     return source_path, title, section_title
 
 
-def _metadata_bonus(result: SearchResult, query_tokens: tuple[str, ...]) -> float:
+def _has_authoritative_source(source_path: str) -> bool:
+    return any(pattern in source_path for pattern in _OFFICIAL_SOURCE_PATTERNS)
+
+
+def _metadata_bonus(
+    result: SearchResult,
+    query_tokens: tuple[str, ...],
+    config: MetadataRerankConfig,
+) -> float:
     if not query_tokens:
         return 0.0
 
@@ -109,12 +126,14 @@ def _metadata_bonus(result: SearchResult, query_tokens: tuple[str, ...]) -> floa
     bonus = 0.0
     for token in query_tokens:
         if source_path and token in source_path:
-            bonus += 0.40
+            bonus += config.source_path_token_bonus
         if title and token in title:
-            bonus += 0.30
+            bonus += config.title_token_bonus
         if section_title and token in section_title:
-            bonus += 0.20
-    return min(bonus, 2.40)
+            bonus += config.section_title_token_bonus
+    if source_path and bonus > 0 and _has_authoritative_source(source_path):
+        bonus += config.authority_boost
+    return min(bonus, config.max_bonus)
 
 
 def rerank_results_by_metadata(
@@ -122,14 +141,16 @@ def rerank_results_by_metadata(
     results: Sequence[SearchResult],
     *,
     top_k: int,
+    config: MetadataRerankConfig | None = None,
 ) -> list[SearchResult]:
+    rerank_config = config or MetadataRerankConfig()
     query_tokens = _query_focus_tokens(expand_query_for_retrieval(query))
     if not results or not query_tokens:
         return list(results)[:top_k]
 
     reranked: list[SearchResult] = []
     for result in results:
-        bonus = _metadata_bonus(result, query_tokens)
+        bonus = _metadata_bonus(result, query_tokens, rerank_config)
         reranked.append(
             SearchResult(
                 chunk_id=result.chunk_id,
@@ -256,25 +277,40 @@ class DashScopeEmbeddingClient:
                 raw = response.read().decode("utf-8")
         except urllib_error.HTTPError as exc:  # pragma: no cover - network call
             detail = exc.read().decode("utf-8", errors="ignore")
-            raise RuntimeError(f"Embedding request failed: {exc.code} {detail}") from exc
+            raise EmbeddingError(
+                f"Embedding request failed: {exc.code} {detail}",
+                status_code=exc.code,
+            ) from exc
         except urllib_error.URLError as exc:  # pragma: no cover - network call
-            raise RuntimeError(f"Embedding request failed: {exc.reason}") from exc
+            raise EmbeddingError(f"Embedding request failed: {exc.reason}") from exc
 
         body = json.loads(raw)
         data = body.get("data")
         if not isinstance(data, list):
-            raise RuntimeError(f"Unexpected embedding response body: {raw}")
+            raise EmbeddingError(
+                "Unexpected embedding response body",
+                retryable=False,
+                details={"body": raw},
+            )
         data.sort(key=lambda item: item.get("index", 0))
 
         vectors: list[list[float]] = []
         for item in data:
             embedding = item.get("embedding")
             if not isinstance(embedding, list):
-                raise RuntimeError(f"Unexpected embedding item: {item}")
+                raise EmbeddingError(
+                    "Unexpected embedding item",
+                    retryable=False,
+                    details={"item": item},
+                )
             vectors.append([float(value) for value in embedding])
 
         if len(vectors) != len(texts):
-            raise RuntimeError("Embedding response length does not match input length.")
+            raise EmbeddingError(
+                "Embedding response length does not match input length.",
+                retryable=False,
+                details={"expected": len(texts), "actual": len(vectors)},
+            )
         return vectors
 
     def _embed(self, texts: list[str]) -> list[list[float]]:

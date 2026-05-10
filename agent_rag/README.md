@@ -22,10 +22,10 @@ The main entrypoint is
 
 - [graph_rag.py](D:/Code/agent_learning/agent_rag/graph_rag.py): CLI entrypoint
 - [graph_rag_app](D:/Code/agent_learning/agent_rag/graph_rag_app): application code
-- [tests](D:/Code/agent_learning/agent_rag/tests): automated tests
 - [agent](D:/Code/agent_learning/agent_rag/agent): local retrieval index files
 - [runtime](D:/Code/agent_learning/agent_rag/runtime): generated logs and checkpoints
 - [skills](D:/Code/agent_learning/agent_rag/skills): default harness skills loaded through `load_skill`
+- [reports](D:/Code/agent_learning/agent_rag/reports): generated academic research reports
 
 ## Common commands
 
@@ -73,12 +73,26 @@ Run the agent with local retrieval and web fallback:
 python graph_rag.py ask --index-dir .\agent --question "What changed recently about OpenAI agents?"
 ```
 
+Generate an academic Markdown research report from a completed agent session:
+
+```powershell
+python graph_rag.py report --session <session-id> --index-dir .\agent --output-dir reports
+```
+
+The report includes Abstract, Introduction, Methods, Findings, Discussion,
+Conclusion, and References sections. Sources from local retrieval, web fetch,
+and scholar search are automatically extracted and cited as `[S1]`, `[S2]`, etc.
+A citation audit at the end of the report flags missing references and
+potentially unsupported claims. Use `--model` to override the chat model for
+report generation.
+
 Configure the chat model in `.env` with OpenAI-compatible provider settings:
 
 ```env
+# Any OpenAI-compatible endpoint — e.g. GPT-5.5, DeepSeek, or DashScope
 RAG_MODEL_API_KEY=<provider-api-key>
-RAG_MODEL_API_BASE=https://api.deepseek.com
-RAG_MODEL_NAME=deepseek-v4-flash
+RAG_MODEL_API_BASE=http://127.0.0.1:58410/v1
+RAG_MODEL_NAME=gpt-5.5
 ```
 
 `DASHSCOPE_API_KEY` is still supported as a backwards-compatible fallback, but
@@ -188,12 +202,6 @@ Run Google Scholar search and export the results to Markdown:
 
 ```powershell
 python graph_rag.py scholar search --topic "graph rag" --count 5 --save-md
-```
-
-## Running tests
-
-```powershell
-pytest tests/
 ```
 
 ## Harness features
@@ -306,8 +314,6 @@ Run the same checks locally that CI runs:
 python -m ruff format --check .
 python -m ruff check .
 python -m pyright
-python -m coverage run -m pytest tests/
-python -m coverage report
 ```
 
 GitHub Actions runs these commands from this project directory.

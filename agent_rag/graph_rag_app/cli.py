@@ -29,6 +29,7 @@ from .indexing import (
 )
 from .jobs import BackgroundJobManager, JobNotFound, job_to_dict
 from .runtime import build_sqlite_checkpointer, run_or_resume
+from .report_cli import add_report_parser, handle_report
 from .scholar_export import save_scholar_search_markdown
 from .scholar_search import run_scholar_search
 from .web_fetch import fetch_url
@@ -189,6 +190,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     job_log.add_argument("--job-id", required=True)
     job_log.add_argument("--runtime-dir", default="runtime/jobs")
     job_log.add_argument("--max-chars", type=int, default=12000)
+
+    add_report_parser(subparsers)
 
     _add_runtime_args(parser, include_index_dir=False)
     parser.add_argument(
@@ -387,6 +390,8 @@ def main(argv: list[str] | None = None) -> int:
         return _handle_job_status(args)
     if args.command == "job" and args.job_command == "log":
         return _handle_job_log(args)
+    if args.command == "report":
+        return handle_report(args)
     if args.command == "ui":
         from .server import serve_fastapi
 

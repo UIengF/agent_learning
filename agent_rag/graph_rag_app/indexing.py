@@ -6,7 +6,7 @@ import os
 import re
 import sqlite3
 from collections import Counter
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterable
@@ -16,6 +16,7 @@ from .config import (
     DEFAULT_MANIFEST_FILENAME,
     DEFAULT_TOP_K,
     IndexBuildConfig,
+    MetadataRerankConfig,
 )
 from .corpus import chunk_text, load_docx_text, load_markdown_text, tokenize
 from .query_rewrite import expand_query_for_retrieval
@@ -39,6 +40,7 @@ class SourceDocument:
     source_path: str
     text: str
     updated_at: float
+    size: int = 0
     section_title: str = ""
 
 
@@ -71,6 +73,7 @@ class IndexedRetriever:
         index_dir: str | Path,
         keyword_weight: float | None = None,
         embedding_client: EmbeddingBackend | None = None,
+        metadata_rerank_config: MetadataRerankConfig | None = None,
     ):
         self.index_dir = Path(index_dir)
         self.manifest_path = self.index_dir / DEFAULT_MANIFEST_FILENAME
@@ -80,6 +83,7 @@ class IndexedRetriever:
             keyword_weight if keyword_weight is not None else manifest["config"]["keyword_weight"]
         )
         self.embedding_client = embedding_client
+        self.metadata_rerank_config = metadata_rerank_config or MetadataRerankConfig()
         self._conn = sqlite3.connect(self.db_path)
         try:
             self.chunk_records = self._load_chunk_records()
@@ -108,7 +112,10 @@ class IndexedRetriever:
         self.close()
 
     def __del__(self) -> None:
-        self.close()
+        try:
+            self.close()
+        except Exception:
+            pass  # GC may run in a different thread than the connection was created in
 
     def _load_chunk_records(self) -> list[dict[str, Any]]:
         rows = self._conn.execute(
@@ -251,7 +258,12 @@ class IndexedRetriever:
                 for chunk_id, score in ranked
                 if self._matches_filters(self.chunk_records[chunk_id], filters)
             ]
-            return rerank_results_by_metadata(normalized_query, results, top_k=top_k)
+            return rerank_results_by_metadata(
+                normalized_query,
+                results,
+                top_k=top_k,
+                config=self.metadata_rerank_config,
+            )
 
         if strategy == "dense":
             dense_scores = normalize_scores(self._dense_scores(retrieval_query))
@@ -261,7 +273,12 @@ class IndexedRetriever:
                 for chunk_id, score in ranked
                 if self._matches_filters(self.chunk_records[chunk_id], filters)
             ]
-            return rerank_results_by_metadata(normalized_query, results, top_k=top_k)
+            return rerank_results_by_metadata(
+                normalized_query,
+                results,
+                top_k=top_k,
+                config=self.metadata_rerank_config,
+            )
 
         keyword_scores = normalize_scores(self._keyword_scores(retrieval_query))
         dense_scores = normalize_scores(self._dense_scores(retrieval_query))
@@ -282,7 +299,12 @@ class IndexedRetriever:
         results = [
             self._build_result(chunk_id, score, "hybrid") for chunk_id, score in fused_scores
         ]
-        return rerank_results_by_metadata(normalized_query, results, top_k=top_k)
+        return rerank_results_by_metadata(
+            normalized_query,
+            results,
+            top_k=top_k,
+            config=self.metadata_rerank_config,
+        )
 
     def search(
         self,
@@ -319,12 +341,14 @@ def _load_source_documents(kb_path: str | Path) -> list[SourceDocument]:
     documents: list[SourceDocument] = []
     if root.is_dir():
         for path in sorted(candidate for candidate in root.rglob("*.md") if candidate.is_file()):
+            stat = path.stat()
             documents.append(
                 SourceDocument(
                     document_id=_document_id_for(path),
                     source_path=path.relative_to(root).as_posix(),
                     text=load_markdown_text(path),
-                    updated_at=path.stat().st_mtime,
+                    updated_at=stat.st_mtime,
+                    size=stat.st_size,
                 )
             )
         if not documents:
@@ -332,22 +356,26 @@ def _load_source_documents(kb_path: str | Path) -> list[SourceDocument]:
         return documents
 
     if root.suffix.lower() == ".md":
+        stat = root.stat()
         return [
             SourceDocument(
                 document_id=_document_id_for(root),
                 source_path=root.name,
                 text=load_markdown_text(root),
-                updated_at=root.stat().st_mtime,
+                updated_at=stat.st_mtime,
+                size=stat.st_size,
             )
         ]
 
     if root.suffix.lower() == ".docx":
+        stat = root.stat()
         return [
             SourceDocument(
                 document_id=_document_id_for(root),
                 source_path=root.name,
                 text=load_docx_text(root),
-                updated_at=root.stat().st_mtime,
+                updated_at=stat.st_mtime,
+                size=stat.st_size,
             )
         ]
 
@@ -569,10 +597,115 @@ def _init_db(db_path: Path) -> sqlite3.Connection:
     conn.execute(
         "CREATE TABLE IF NOT EXISTS bm25_idf (token TEXT PRIMARY KEY, value REAL NOT NULL)"
     )
+    return conn
+
+
+def _clear_index_tables(conn: sqlite3.Connection) -> None:
     conn.execute("DELETE FROM chunks")
     conn.execute("DELETE FROM idf")
     conn.execute("DELETE FROM bm25_idf")
-    return conn
+
+
+def _insert_chunk_records(conn: sqlite3.Connection, records: list[ChunkRecord]) -> None:
+    conn.executemany(
+        """
+        INSERT INTO chunks (
+            chunk_id, document_id, source_path, section_title, chunk_index, updated_at,
+            text, doc_length, token_counts_json, dense_vector_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                record.chunk_id,
+                record.document_id,
+                record.source_path,
+                record.section_title,
+                record.chunk_index,
+                record.updated_at,
+                record.text,
+                sum(record.token_counts.values()),
+                json.dumps(record.token_counts, ensure_ascii=False, sort_keys=True),
+                json.dumps(record.dense_vector),
+            )
+            for record in records
+        ],
+    )
+
+
+def _insert_idf_tables(
+    conn: sqlite3.Connection,
+    idf: dict[str, float],
+    bm25_idf: dict[str, float],
+) -> None:
+    conn.executemany(
+        "INSERT INTO idf(token, value) VALUES(?, ?)",
+        sorted(idf.items()),
+    )
+    conn.executemany(
+        "INSERT INTO bm25_idf(token, value) VALUES(?, ?)",
+        sorted(bm25_idf.items()),
+    )
+
+
+def _load_chunk_records_from_db(conn: sqlite3.Connection) -> list[ChunkRecord]:
+    rows = conn.execute(
+        """
+        SELECT
+            chunk_id,
+            document_id,
+            source_path,
+            section_title,
+            chunk_index,
+            updated_at,
+            text,
+            token_counts_json,
+            dense_vector_json
+        FROM chunks
+        ORDER BY chunk_id
+        """
+    ).fetchall()
+    return [
+        ChunkRecord(
+            chunk_id=int(row[0]),
+            document_id=str(row[1]),
+            source_path=str(row[2]),
+            section_title=str(row[3] or ""),
+            chunk_index=int(row[4]),
+            updated_at=float(row[5]),
+            text=str(row[6]),
+            token_counts={str(key): int(value) for key, value in json.loads(row[7]).items()},
+            dense_vector=[float(value) for value in json.loads(row[8])],
+        )
+        for row in rows
+    ]
+
+
+def _renumber_chunk_records(records: list[ChunkRecord]) -> list[ChunkRecord]:
+    return [replace(record, chunk_id=chunk_id) for chunk_id, record in enumerate(records)]
+
+
+def _file_states_for_documents(documents: list[SourceDocument]) -> dict[str, dict[str, float | int]]:
+    return {
+        document.source_path: {
+            "mtime": document.updated_at,
+            "size": document.size,
+        }
+        for document in documents
+    }
+
+
+def _config_requires_full_rebuild(
+    existing_manifest: dict[str, Any],
+    index_config: IndexBuildConfig,
+) -> bool:
+    existing_config = existing_manifest.get("config", {})
+    if not isinstance(existing_config, dict):
+        return True
+    current_config = asdict(index_config)
+    for key in ("chunk_size", "chunk_overlap", "keyword_weight", "dense_dim", "index_version"):
+        if existing_config.get(key) != current_config.get(key):
+            return True
+    return False
 
 
 def _default_embedding_client() -> EmbeddingBackend | None:
@@ -597,46 +730,59 @@ def build_index(
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     documents = _load_source_documents(kb_path)
-    records = _build_chunk_records(
-        documents, index_config, embedding_client or _default_embedding_client()
-    )
-    idf, bm25_idf = _build_idf_tables(records)
-
     db_path = output / DEFAULT_INDEX_DB_FILENAME
     manifest_path = output / DEFAULT_MANIFEST_FILENAME
+    current_file_states = _file_states_for_documents(documents)
+    existing_manifest: dict[str, Any] = {}
+    existing_file_states: dict[str, Any] = {}
+    if manifest_path.exists():
+        try:
+            existing_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            file_states = existing_manifest.get("file_states", {})
+            if isinstance(file_states, dict):
+                existing_file_states = file_states
+        except (json.JSONDecodeError, OSError):
+            existing_manifest = {}
+            existing_file_states = {}
+
+    can_incremental = (
+        not index_config.force_rebuild
+        and db_path.exists()
+        and bool(existing_file_states)
+        and not _config_requires_full_rebuild(existing_manifest, index_config)
+    )
+
+    changed_docs: list[SourceDocument] = []
+    unchanged_doc_ids: set[str] = set()
+    current_source_paths = {document.source_path for document in documents}
+    removed_source_paths = set(existing_file_states) - current_source_paths
+    for document in documents:
+        current_state = current_file_states[document.source_path]
+        if can_incremental and existing_file_states.get(document.source_path) == current_state:
+            unchanged_doc_ids.add(document.document_id)
+        else:
+            changed_docs.append(document)
+
     conn = _init_db(db_path)
     try:
-        conn.executemany(
-            """
-            INSERT INTO chunks (
-                chunk_id, document_id, source_path, section_title, chunk_index, updated_at,
-                text, doc_length, token_counts_json, dense_vector_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                (
-                    record.chunk_id,
-                    record.document_id,
-                    record.source_path,
-                    record.section_title,
-                    record.chunk_index,
-                    record.updated_at,
-                    record.text,
-                    sum(record.token_counts.values()),
-                    json.dumps(record.token_counts, ensure_ascii=False, sort_keys=True),
-                    json.dumps(record.dense_vector),
-                )
-                for record in records
-            ],
-        )
-        conn.executemany(
-            "INSERT INTO idf(token, value) VALUES(?, ?)",
-            sorted(idf.items()),
-        )
-        conn.executemany(
-            "INSERT INTO bm25_idf(token, value) VALUES(?, ?)",
-            sorted(bm25_idf.items()),
-        )
+        embedding_backend = embedding_client or _default_embedding_client()
+        if can_incremental:
+            existing_records = _load_chunk_records_from_db(conn)
+            retained_records = [
+                record
+                for record in existing_records
+                if record.document_id in unchanged_doc_ids
+                and record.source_path not in removed_source_paths
+            ]
+            changed_records = _build_chunk_records(changed_docs, index_config, embedding_backend)
+            records = _renumber_chunk_records(retained_records + changed_records)
+        else:
+            records = _build_chunk_records(documents, index_config, embedding_backend)
+
+        idf, bm25_idf = _build_idf_tables(records)
+        _clear_index_tables(conn)
+        _insert_chunk_records(conn, records)
+        _insert_idf_tables(conn, idf, bm25_idf)
         conn.commit()
     finally:
         conn.close()
@@ -650,6 +796,7 @@ def build_index(
         "document_count": len(documents),
         "built_at": built_at,
         "config": asdict(index_config),
+        "file_states": current_file_states,
     }
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     return BuildReport(
@@ -667,11 +814,13 @@ def load_index(
     *,
     keyword_weight: float | None = None,
     embedding_client: EmbeddingBackend | None = None,
+    metadata_rerank_config: MetadataRerankConfig | None = None,
 ) -> IndexedRetriever:
     return IndexedRetriever(
         index_dir=index_dir,
         keyword_weight=keyword_weight,
         embedding_client=embedding_client or _default_embedding_client(),
+        metadata_rerank_config=metadata_rerank_config,
     )
 
 

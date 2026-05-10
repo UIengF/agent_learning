@@ -12,12 +12,12 @@
 
 - [graph_rag.py](D:/Code/agent_learning/agent_rag/graph_rag.py)：CLI 入口
 - [graph_rag_app](D:/Code/agent_learning/agent_rag/graph_rag_app)：应用核心代码
-- [tests](D:/Code/agent_learning/agent_rag/tests)：自动化测试
 - [agent](D:/Code/agent_learning/agent_rag/agent)：本地检索索引目录
 - [runtime](D:/Code/agent_learning/agent_rag/runtime)：运行日志、checkpoint 和后台任务状态
 - [evals](D:/Code/agent_learning/agent_rag/evals)：检索和 Agent 评测数据集
 - [scripts](D:/Code/agent_learning/agent_rag/scripts)：启动、状态检查、停止和评测脚本
 - [skills](D:/Code/agent_learning/agent_rag/skills)：可通过 `load_skill` 动态加载的默认 harness skills
+- [reports](D:/Code/agent_learning/agent_rag/reports)：生成的学术研究报告
 
 ## 常用命令
 
@@ -65,6 +65,17 @@ conda run -n langgraph python graph_rag.py query run --index-dir .\agent --quest
 conda run -n langgraph python graph_rag.py ask --index-dir .\agent --question "What changed recently about OpenAI agents?"
 ```
 
+从已完成的 Agent 会话生成学术 Markdown 研究报告：
+
+```powershell
+conda run -n langgraph python graph_rag.py report --session <session-id> --index-dir .\agent --output-dir reports
+```
+
+报告包含摘要、引言、方法、发现、讨论、结论和参考文献章节。来自本地检索、
+网页抓取和学术搜索的来源会自动提取并以 `[S1]`、`[S2]` 等格式引用。
+报告末尾的引用审计会标记缺失引用和可能无依据的声明。使用 `--model`
+可指定报告生成所用模型。
+
 启动 Web UI：
 
 ```powershell
@@ -78,9 +89,10 @@ conda run -n langgraph python graph_rag.py ui --index-dir .\agent
 在 `.env` 中配置 OpenAI-compatible 模型服务：
 
 ```env
+# 支持任意 OpenAI-compatible 端点 — 例如 GPT-5.5、DeepSeek 或 DashScope
 RAG_MODEL_API_KEY=<provider-api-key>
-RAG_MODEL_API_BASE=https://api.deepseek.com
-RAG_MODEL_NAME=deepseek-v4-flash
+RAG_MODEL_API_BASE=http://127.0.0.1:58410/v1
+RAG_MODEL_NAME=gpt-5.5
 ```
 
 `DASHSCOPE_API_KEY` 仍作为兼容旧配置的 fallback，但新配置建议使用 `RAG_MODEL_*`。
@@ -234,14 +246,12 @@ conda run -n langgraph python graph_rag.py eval run --dataset evals\datasets\age
 conda run -n langgraph python -m pip install -r requirements-dev.txt
 ```
 
-运行质量检查：
+运行代码质量检查：
 
 ```powershell
 conda run -n langgraph python -m ruff format --check .
 conda run -n langgraph python -m ruff check .
 conda run -n langgraph python -m pyright
-conda run -n langgraph python -m coverage run -m unittest discover -s tests -v
-conda run -n langgraph python -m coverage report
 ```
 
 GitHub Actions 会在仓库根目录运行同一组检查。

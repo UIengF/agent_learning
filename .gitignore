@@ -20,6 +20,10 @@ agent_rag/.learnings/
 agent_rag/.coverage
 agent_rag/.pytest_cache/
 agent_rag/.ruff_cache/
+agent_rag/reports/
+agent_rag/plans/
+agent_rag/tests/
+agent_rag/test_kb/
 agent_rag_local_backup_*/
 ai_coding_agent/runtime/
 ai_coding_agent/.env

@@ -206,3 +206,10 @@ class JobResponse(BaseModel):
 class JobLogResponse(BaseModel):
     job_id: str
     log: str
+
+
+class ReportResponse(BaseModel):
+    markdown: str
+    path: str
+    sources_count: int
+    gaps: list[str]
