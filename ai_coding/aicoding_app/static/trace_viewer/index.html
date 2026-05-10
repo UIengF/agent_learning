@@ -3,20 +3,25 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>AI Coding Web</title>
+    <title>AI Coding Workspace</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <aside class="sidebar">
       <div class="brand">
+        <div class="brand-mark" aria-hidden="true">&lt;/&gt;</div>
         <div>
           <h1>AI Coding</h1>
           <p class="meta">Multi-turn workspace agent</p>
         </div>
-        <button id="refresh" type="button">Refresh</button>
+        <button id="refresh" class="icon-button" type="button" title="Refresh conversations">R</button>
       </div>
 
-      <button id="new-session" class="primary full-width" type="button">New chat</button>
+      <button id="new-session" class="primary full-width" type="button">+ New chat</button>
+      <label class="search-field">
+        <span>Conversations</span>
+        <input id="session-search" placeholder="Search conversations..." />
+      </label>
       <div id="sessions" class="session-list"></div>
     </aside>
 
@@ -41,43 +46,111 @@
             </select>
           </label>
         </div>
+        <div class="toolbar-actions" aria-label="workspace actions">
+          <button class="icon-button" type="button" title="Settings">S</button>
+          <button class="icon-button" type="button" title="Help">?</button>
+          <button class="avatar-button" type="button" title="User">JD</button>
+        </div>
       </section>
 
       <section id="messages" class="messages" aria-live="polite">
         <div class="empty-state">
+          <div class="welcome-icon" aria-hidden="true">&lt;/&gt;</div>
           <h2>Start a coding conversation</h2>
-          <p>Send a request, then keep using the same session for follow-up changes.</p>
+          <p>Describe a task, then follow up with changes in the same session.</p>
+          <div class="quick-grid" aria-label="quick starts">
+            <button type="button" class="quick-card">
+              <span class="quick-icon">Code</span>
+              <strong>Modify existing code</strong>
+              <small>Update or refactor code in your project</small>
+            </button>
+            <button type="button" class="quick-card">
+              <span class="quick-icon purple">New</span>
+              <strong>Create feature</strong>
+              <small>Build a new feature from scratch</small>
+            </button>
+            <button type="button" class="quick-card">
+              <span class="quick-icon red">Fix</span>
+              <strong>Debug issue</strong>
+              <small>Investigate and fix bugs or errors</small>
+            </button>
+            <button type="button" class="quick-card">
+              <span class="quick-icon green">QA</span>
+              <strong>Review project</strong>
+              <small>Analyze code quality and suggest improvements</small>
+            </button>
+          </div>
         </div>
       </section>
 
       <section class="composer">
-        <textarea id="run-task" rows="4" placeholder="Describe the next coding task"></textarea>
+        <textarea id="run-task" rows="4" placeholder="Describe the next coding task..."></textarea>
         <div class="composer-actions">
-          <span id="run-status" class="meta"></span>
-          <button id="run-agent" class="primary" type="button">Send</button>
+          <div class="composer-left">
+            <button class="secondary" type="button">Attach</button>
+            <button class="secondary" type="button">Run</button>
+          </div>
+          <div class="composer-right">
+            <span id="run-status" class="meta"></span>
+            <span class="send-hint">Ctrl Enter to send</span>
+            <button id="run-agent" class="primary" type="button">Send</button>
+          </div>
         </div>
       </section>
     </main>
 
     <aside class="inspector">
-      <section class="summary" id="summary">
-        <h2>Session activity</h2>
-        <p class="meta">Trace details appear after a run or after selecting a session.</p>
+      <section class="activity-card">
+        <div class="summary" id="summary">
+          <h2>Session activity</h2>
+          <p class="meta">Trace details appear after a run.</p>
+        </div>
+
+        <div class="filters" aria-label="event filters">
+          <label><input type="checkbox" value="model_call" checked /> Model</label>
+          <label><input type="checkbox" value="tool_call" checked /> Tools</label>
+          <label><input type="checkbox" value="final_response" checked /> Final</label>
+          <label><input type="checkbox" value="model_fallback" checked /> Fallback</label>
+          <label><input type="checkbox" value="state_transition" checked /> State</label>
+        </div>
+
+        <div class="timeline" id="timeline">
+          <button class="event placeholder" type="button" disabled>
+            <span class="event-icon" aria-hidden="true"></span>
+            <strong>Run started</strong>
+            <time>10:24 AM</time>
+            <small>Agent initialized</small>
+          </button>
+          <button class="event placeholder" type="button" disabled>
+            <span class="event-icon" aria-hidden="true"></span>
+            <strong>Tool used</strong>
+            <time>10:24 AM</time>
+            <small>read_file</small>
+          </button>
+          <button class="event placeholder" type="button" disabled>
+            <span class="event-icon" aria-hidden="true"></span>
+            <strong>Model response</strong>
+            <time>10:24 AM</time>
+            <small>Generated code changes</small>
+          </button>
+          <button class="event placeholder" type="button" disabled>
+            <span class="event-icon" aria-hidden="true"></span>
+            <strong>Run completed</strong>
+            <time>10:24 AM</time>
+            <small>All steps finished</small>
+          </button>
+        </div>
       </section>
 
-      <section class="filters" aria-label="event filters">
-        <label><input type="checkbox" value="model_call" checked /> model</label>
-        <label><input type="checkbox" value="tool_call" checked /> tools</label>
-        <label><input type="checkbox" value="final_response" checked /> final</label>
-        <label><input type="checkbox" value="model_fallback" checked /> fallback</label>
-        <label><input type="checkbox" value="state_transition" checked /> state</label>
-      </section>
-
-      <section class="trace-panel">
-        <div class="timeline" id="timeline"></div>
+      <section class="detail-card">
         <article class="detail" id="detail">
           <h2>Event detail</h2>
           <p class="meta">Select an event from the timeline.</p>
+          <div class="detail-empty">
+            <div class="detail-empty-icon" aria-hidden="true">[]</div>
+            <strong>No event selected</strong>
+            <span>Choose an event to view more details here.</span>
+          </div>
         </article>
       </section>
     </aside>
