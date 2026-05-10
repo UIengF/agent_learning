@@ -281,11 +281,12 @@ def create_app(*, default_index_dir: str = "agent") -> FastAPI:
     @app.post("/api/retrieve", response_model=RetrieveResponse)
     def retrieve(payload: RetrieveRequest) -> RetrieveResponse:
         app.state.permission_policy.validate_index_dir(payload.index_dir)
-        results = load_index(payload.index_dir).retrieve(
-            payload.query,
-            top_k=payload.top_k,
-            strategy=payload.strategy,
-        )
+        with load_index(payload.index_dir) as retriever:
+            results = retriever.retrieve(
+                payload.query,
+                top_k=payload.top_k,
+                strategy=payload.strategy,
+            )
         items = [_result_to_item(result) for result in results]
         return RetrieveResponse(
             query=payload.query,

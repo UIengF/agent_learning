@@ -34,7 +34,7 @@ from .web_tools import WebFetchTool, WebSearchTool
 
 try:
     import operator
-    from typing import Annotated, TypedDict
+    from typing import Annotated, NotRequired, TypedDict
 
     from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage, ToolMessage
     from langchain_core.tools import BaseTool
@@ -108,6 +108,10 @@ if LANGGRAPH_AVAILABLE:
 
     class AgentState(TypedDict):
         messages: Annotated[list[AnyMessage], operator.add]
+        current_question: NotRequired[str]
+        research_plan: NotRequired[str]
+        question_frame: NotRequired[str]
+        task_state: NotRequired[str]
 else:
     AgentState = dict[str, Any]
 
@@ -415,6 +419,25 @@ class Agent:
                 if content:
                     return content
         return ""
+
+    def _sync_derived_state(self, state: AgentState) -> AgentState:
+        if not state.get("current_question"):
+            state["current_question"] = self._extract_question_text(state["messages"])
+        if not state.get("research_plan"):
+            state["research_plan"] = format_research_plan(
+                latest_research_plan(list(state["messages"]))
+            )
+        if not state.get("question_frame"):
+            question_frame = self._build_question_frame(list(state["messages"]))
+            if question_frame:
+                state["question_frame"] = format_question_frame(question_frame)
+        if not state.get("task_state"):
+            task_state = self._build_task_state(list(state["messages"]))
+            if task_state:
+                state["task_state"] = format_task_state(
+                    task_state, shorten=self._shorten, max_chars=self.max_context_chars
+                )
+        return state
 
     def _build_question_frame(self, messages: list[AnyMessage | dict]) -> QuestionFrame | None:
         question = self._extract_question_text(messages)
@@ -962,6 +985,7 @@ class Agent:
         return self.build_context_result(state).messages
 
     def call_openai(self, state: AgentState):
+        state = self._sync_derived_state(state)
         if self.model is None:
             raise RuntimeError("Model is required to run graph_rag agent.")
 
@@ -1075,6 +1099,7 @@ class Agent:
         return {"messages": [message]}
 
     def take_action(self, state: AgentState):
+        state = self._sync_derived_state(state)
         tool_calls = state["messages"][-1].tool_calls
         evidence_cache = self._build_evidence_cache(list(state["messages"]))
         results = []

@@ -7,9 +7,11 @@ from datetime import datetime
 import json
 import os
 from pathlib import Path
+import tomllib
 
 from .config import (
     DEFAULT_CHECKPOINT_DB,
+    PROJECT_ROOT,
     DEFAULT_SESSION_ID,
     IndexBuildConfig,
     RetrievalRuntimeConfig,
@@ -31,9 +33,15 @@ from .scholar_export import save_scholar_search_markdown
 from .scholar_search import run_scholar_search
 from .web_fetch import fetch_url
 from .web_runtime import build_configured_web_search_backend
-from .server import serve_fastapi
 
 DEFAULT_QUESTION = "What does the knowledge base say about Anthropic agent technology?"
+
+
+def get_project_version() -> str:
+    pyproject = PROJECT_ROOT / "pyproject.toml"
+    with pyproject.open("rb") as file:
+        metadata = tomllib.load(file)
+    return str(metadata["project"]["version"])
 
 
 def _bounded_int(minimum: int, maximum: int):
@@ -73,6 +81,7 @@ def _add_runtime_args(parser: argparse.ArgumentParser, *, include_index_dir: boo
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run or resume the graph_rag LangGraph agent.")
+    parser.add_argument("--version", action="version", version=get_project_version())
     subparsers = parser.add_subparsers(dest="command")
 
     index_parser = subparsers.add_parser("index", help="Build or inspect a retrieval index.")
@@ -108,7 +117,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     web_fetch = web_subparsers.add_parser("fetch", help="Fetch a public web page.")
     web_fetch.add_argument("--url", required=True)
 
-    scholar_parser = subparsers.add_parser("scholar", help="Run Google Scholar search commands.")
+    scholar_parser = subparsers.add_parser(
+        "scholar",
+        help="Run Google Scholar search commands.",
+        description=(
+            "Search Google Scholar-style results for a research topic and return structured "
+            "paper metadata. Results can optionally be exported as Markdown."
+        ),
+    )
     scholar_subparsers = scholar_parser.add_subparsers(dest="scholar_command", required=True)
     scholar_search = scholar_subparsers.add_parser(
         "search", help="Search Google Scholar from a topic."
@@ -135,7 +151,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     serve_parser.add_argument("--port", type=int, default=8765)
     serve_parser.add_argument("--reload", action="store_true", default=False)
 
-    eval_parser = subparsers.add_parser("eval", help="Run evaluation datasets and persist reports.")
+    eval_parser = subparsers.add_parser(
+        "eval",
+        help="Run evaluation datasets and persist reports.",
+        description=(
+            "Run local evaluation datasets against an index and persist a report. "
+            "Optional judge settings can override the configured evaluator model."
+        ),
+    )
     eval_subparsers = eval_parser.add_subparsers(dest="eval_command", required=True)
     eval_run = eval_subparsers.add_parser("run", help="Run a local evaluation dataset.")
     eval_run.add_argument("--dataset", required=True)
@@ -150,7 +173,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     eval_run.add_argument("--judge-api-base", default=None)
     eval_run.add_argument("--judge-api-key", default=None)
 
-    job_parser = subparsers.add_parser("job", help="Inspect background job status and logs.")
+    job_parser = subparsers.add_parser(
+        "job",
+        help="Inspect background job status and logs.",
+        description=(
+            "Inspect background job records and logs written by the runtime job manager. "
+            "Use this to check job status or read recent log output."
+        ),
+    )
     job_subparsers = job_parser.add_subparsers(dest="job_command", required=True)
     job_status = job_subparsers.add_parser("status", help="Read a background job record.")
     job_status.add_argument("--job-id", required=True)
@@ -207,11 +237,12 @@ def _handle_query_run(args: argparse.Namespace) -> int:
         top_k=args.top_k or RetrievalRuntimeConfig().top_k,
         strategy=args.strategy or RetrievalRuntimeConfig().strategy,
     )
-    results = load_index(args.index_dir).retrieve(
-        args.question,
-        top_k=retrieval_config.top_k,
-        strategy=retrieval_config.strategy,
-    )
+    with load_index(args.index_dir) as retriever:
+        results = retriever.retrieve(
+            args.question,
+            top_k=retrieval_config.top_k,
+            strategy=retrieval_config.strategy,
+        )
     _print_json([result.__dict__ for result in results])
     return 0
 
@@ -357,8 +388,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "job" and args.job_command == "log":
         return _handle_job_log(args)
     if args.command == "ui":
+        from .server import serve_fastapi
+
         return serve_fastapi(index_dir=args.index_dir, host=args.host, port=args.port, reload=False)
     if args.command == "serve":
+        from .server import serve_fastapi
+
         return serve_fastapi(
             index_dir=args.index_dir,
             host=args.host,
@@ -372,3 +407,7 @@ def main(argv: list[str] | None = None) -> int:
 
     args.index_dir = str(resolve_existing_index_for_kb(kb_path))
     return _handle_ask(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

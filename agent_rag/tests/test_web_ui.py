@@ -20,7 +20,7 @@ class WebUiTests(TestCase):
         self.assertEqual(args.port, 8765)
 
     def test_main_dispatches_ui_command(self) -> None:
-        with patch("graph_rag_app.cli.serve_fastapi", return_value=0) as serve_fastapi:
+        with patch("graph_rag_app.server.serve_fastapi", return_value=0) as serve_fastapi:
             exit_code = main(
                 ["ui", "--index-dir", ".\\agent", "--host", "127.0.0.1", "--port", "8765"]
             )

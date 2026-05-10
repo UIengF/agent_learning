@@ -7,7 +7,6 @@ from .agent import (
     PROMPT,
     build_agent,
 )
-from .cli import main, parse_args
 from .config import (
     AppConfig,
     DEFAULT_CHECKPOINT_DB,
@@ -87,6 +86,12 @@ from .retrieval import (
     LocalRAGStore,
     Retriever,
     SearchResult,
+    build_bm25_idf,
+    build_idf,
+    dense_cosine_similarity,
+    normalize_dense_vector,
+    normalize_scores,
+    stable_hash,
 )
 from .web_fetch import fetch_url
 from .web_search import DuckDuckGoHtmlSearchBackend
@@ -108,6 +113,19 @@ from .runtime import (
     run_or_resume,
     shorten_text,
 )
+
+
+def main(argv=None):
+    from .cli import main as _main
+
+    return _main(argv)
+
+
+def parse_args(argv=None):
+    from .cli import parse_args as _parse
+
+    return _parse(argv)
+
 
 __all__ = [
     "Agent",
@@ -171,6 +189,7 @@ __all__ = [
     "StructuredTraceWriter",
     "ToolPermissionPolicy",
     "serve_ui",
+    "stable_hash",
     "DuckDuckGoHtmlSearchBackend",
     "WebFetchInput",
     "WebFetchTool",
@@ -179,10 +198,13 @@ __all__ = [
     "append_log",
     "build_agent",
     "build_app_config",
+    "build_bm25_idf",
+    "build_idf",
     "build_index",
     "build_sqlite_checkpointer",
     "chunk_text",
     "default_index_dir_for_kb",
+    "dense_cosine_similarity",
     "ensure_index_for_kb",
     "ensure_log_file",
     "extract_final_answer",
@@ -202,6 +224,8 @@ __all__ = [
     "main",
     "merge_scholar_hits",
     "ndcg_at_k",
+    "normalize_dense_vector",
+    "normalize_scores",
     "parse_args",
     "parse_bool_env",
     "parse_scholar_organic_results",

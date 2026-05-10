@@ -13,6 +13,7 @@ from urllib import request as urllib_request
 
 from .config import DEFAULT_KEYWORD_WEIGHT, DEFAULT_TOP_K
 from .corpus import chunk_text, load_corpus_text, tokenize
+from .query_rewrite import _query_focus_tokens, expand_query_for_retrieval
 
 
 @dataclass(frozen=True)
@@ -84,87 +85,6 @@ _METADATA_STOPWORDS = {
     "are",
 }
 _HEADER_VALUE_PATTERN = re.compile(r"(?im)^\[(SOURCE|TITLE|SECTION):\s*(.*?)\]\s*$")
-
-_QUERY_REWRITE_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
-    (("document", "background", "passage"), "contextual retrieval rag chunk document context"),
-    (("document", "background", "passages"), "contextual retrieval rag chunk document context"),
-    (("isolated", "fragment", "ambiguous"), "contextual retrieval rag chunk document context"),
-    (("isolated", "fragments", "ambiguous"), "contextual retrieval rag chunk document context"),
-    (("scratchpad", "function"), "think tool tool use"),
-    (("deliberate", "before", "acting"), "think tool tool use"),
-    (("specialized", "workers"), "multi-agent research system"),
-    (("information", "gathering", "single"), "multi-agent research system"),
-    (("one", "click", "server"), "claude desktop extensions mcp server"),
-    (("desktop", "integration"), "claude desktop extensions mcp server"),
-    (("callable", "functions"), "effective tools agents tool design"),
-    (("operate", "correctly"), "effective tools agents tool design"),
-    (("information", "window"), "context engineering ai agents context"),
-    (("long", "tasks", "stable"), "context engineering ai agents context"),
-    (("confirmation", "dialogs"), "permission prompts secure autonomous claude code"),
-    (("stronger", "boundaries"), "permission prompts secure autonomous claude code"),
-    (("protocol", "resources"), "code execution mcp efficient agents"),
-    (("back", "forth", "calls"), "code execution mcp efficient agents"),
-    (("function", "calling", "developers"), "advanced tool use claude developer platform"),
-    (("scaffolding", "long", "jobs"), "harnesses long-running agents"),
-    (("keep", "working", "long"), "harnesses long-running agents"),
-    (("measurement", "pitfalls"), "evals ai agents evaluation"),
-    (("benchmark", "interpretation"), "evals ai agents evaluation"),
-    (("memorize", "game"), "ai-resistant technical evaluations"),
-    (("technical", "interviews"), "ai-resistant technical evaluations"),
-    (("systems", "programming", "parallel"), "parallel claudes c compiler"),
-    (("task", "recognition", "capability"), "eval awareness browsecomp claude opus"),
-    (("browser", "benchmark"), "eval awareness browsecomp claude opus"),
-    (("app", "building", "over", "time"), "harness design long-running application development"),
-    (("without", "asking", "every", "step"), "claude code auto mode permissions"),
-    (("guarded", "coding", "assistant"), "claude code auto mode permissions"),
-    (("scripted", "workflows"), "building effective ai agents workflows"),
-    (("open", "ended", "autonomous"), "building effective ai agents workflows"),
-    (("command", "line", "coding"), "claude code overview workflow"),
-    (("everyday", "development", "workflow"), "claude code overview workflow"),
-    (("software", "engineering", "issue"), "swe-bench performance claude"),
-    (("issue", "resolution"), "swe-bench performance claude"),
-    (("routing", "chaining", "orchestration"), "workflow patterns ai agents"),
-    (("evaluator", "loops"), "workflow patterns ai agents"),
-    (("pull", "request", "assessment"), "code review claude code"),
-    (("token", "window", "model"), "1m context opus sonnet"),
-    (("applications", "files", "machine"), "computer use claude computer"),
-    (("browser", "architecture", "chatgpt"), "owl atlas chatgpt-based browser"),
-    (("mobile", "video", "app"), "codex sora android 28 days"),
-    (("database", "scaling", "chatgpt"), "postgresql 800 million chatgpt users"),
-    (("observe", "plan", "act"), "codex agent loop"),
-    (("internal", "assistant", "company", "data"), "in-house data agent openai"),
-    (("local", "service", "development", "environment"), "codex harness app server"),
-    (("managed", "computer", "sandbox"), "responses api computer environment agents"),
-)
-
-
-def _query_focus_tokens(query: str) -> tuple[str, ...]:
-    tokens: list[str] = []
-    for token in tokenize(query):
-        normalized = token.strip().lower()
-        if not normalized or normalized.isdigit():
-            continue
-        if len(normalized) < 3:
-            continue
-        if normalized in _METADATA_STOPWORDS:
-            continue
-        tokens.append(normalized)
-    return tuple(dict.fromkeys(tokens))
-
-
-def expand_query_for_retrieval(query: str) -> str:
-    """Add compact domain terms for paraphrased agent-research queries."""
-
-    original_tokens = set(_query_focus_tokens(query))
-    additions: list[str] = []
-    for required_tokens, rewrite in _QUERY_REWRITE_RULES:
-        if all(token in original_tokens for token in required_tokens):
-            additions.append(rewrite)
-    if not additions:
-        return query
-    terms = " ".join(dict.fromkeys(" ".join(additions).split()))
-    return f"{query} {terms}"
-
 
 def _extract_header_metadata(text: str) -> dict[str, str]:
     metadata: dict[str, str] = {}
@@ -238,6 +158,68 @@ def normalize_search_result(item: SearchResult | Mapping[str, Any]) -> SearchRes
         section_title=str(item.get("section_title", "")),
         strategy=str(item.get("strategy", "hybrid")),
     )
+
+
+def build_idf(counters: list[Counter[str]]) -> dict[str, float]:
+    doc_count = len(counters)
+    document_frequency: Counter[str] = Counter()
+    for counter in counters:
+        document_frequency.update(counter.keys())
+
+    return {
+        token: math.log((1 + doc_count) / (1 + freq)) + 1.0
+        for token, freq in document_frequency.items()
+    }
+
+
+def build_bm25_idf(counters: list[Counter[str]]) -> dict[str, float]:
+    doc_count = len(counters)
+    document_frequency: Counter[str] = Counter()
+    for counter in counters:
+        document_frequency.update(counter.keys())
+
+    return {
+        token: math.log(1 + ((doc_count - freq + 0.5) / (freq + 0.5)))
+        for token, freq in document_frequency.items()
+    }
+
+
+def normalize_dense_vector(vector: list[float]) -> list[float]:
+    if not vector:
+        return []
+    norm = math.sqrt(sum(value * value for value in vector))
+    if norm == 0:
+        return []
+    return [value / norm for value in vector]
+
+
+def dense_cosine_similarity(left: list[float], right: list[float]) -> float:
+    if not left or not right or len(left) != len(right):
+        return 0.0
+    return sum(l_value * r_value for l_value, r_value in zip(left, right))
+
+
+def stable_hash(token: str) -> tuple[int, float]:
+    digest = hashlib.md5(token.encode("utf-8")).digest()
+    bucket = int.from_bytes(digest[:4], "big")
+    sign = 1.0 if digest[4] % 2 == 0 else -1.0
+    return bucket, sign
+
+
+def normalize_scores(scores: dict[int, float]) -> dict[int, float]:
+    if not scores:
+        return {}
+
+    values = list(scores.values())
+    high = max(values)
+    low = min(values)
+    if math.isclose(high, low):
+        if high <= 0:
+            return {chunk_id: 0.0 for chunk_id in scores}
+        return {chunk_id: 1.0 for chunk_id in scores}
+
+    denominator = high - low
+    return {chunk_id: (score - low) / denominator for chunk_id, score in scores.items()}
 
 
 class DashScopeEmbeddingClient:
@@ -328,7 +310,7 @@ class LocalRAGStore:
         self.text = load_corpus_text(self.kb_path)
         self.chunks = chunk_text(self.text, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
         if not self.chunks:
-            raise ValueError("鏂囨。涓湭鎻愬彇鍒板彲妫€绱㈠唴瀹广€?")
+            raise ValueError("No searchable content was extracted from the document.")
 
         self.chunk_token_counts = [Counter(tokenize(chunk)) for chunk in self.chunks]
         self.chunk_lengths = [sum(counter.values()) for counter in self.chunk_token_counts]
@@ -345,27 +327,11 @@ class LocalRAGStore:
 
     @staticmethod
     def _build_idf(counters: list[Counter[str]]) -> dict[str, float]:
-        doc_count = len(counters)
-        document_frequency: Counter[str] = Counter()
-        for counter in counters:
-            document_frequency.update(counter.keys())
-
-        return {
-            token: math.log((1 + doc_count) / (1 + freq)) + 1.0
-            for token, freq in document_frequency.items()
-        }
+        return build_idf(counters)
 
     @staticmethod
     def _build_bm25_idf(counters: list[Counter[str]]) -> dict[str, float]:
-        doc_count = len(counters)
-        document_frequency: Counter[str] = Counter()
-        for counter in counters:
-            document_frequency.update(counter.keys())
-
-        return {
-            token: math.log(1 + ((doc_count - freq + 0.5) / (freq + 0.5)))
-            for token, freq in document_frequency.items()
-        }
+        return build_bm25_idf(counters)
 
     def _vectorize(self, token_counts: Counter[str]) -> dict[str, float]:
         total = sum(token_counts.values())
@@ -384,12 +350,7 @@ class LocalRAGStore:
 
     @staticmethod
     def _normalize_dense_vector(vector: list[float]) -> list[float]:
-        if not vector:
-            return []
-        norm = math.sqrt(sum(value * value for value in vector))
-        if norm == 0:
-            return []
-        return [value / norm for value in vector]
+        return normalize_dense_vector(vector)
 
     def _bm25_score(
         self,
@@ -414,16 +375,11 @@ class LocalRAGStore:
 
     @staticmethod
     def _dense_cosine_similarity(left: list[float], right: list[float]) -> float:
-        if not left or not right or len(left) != len(right):
-            return 0.0
-        return sum(l_value * r_value for l_value, r_value in zip(left, right))
+        return dense_cosine_similarity(left, right)
 
     @staticmethod
     def _stable_hash(token: str) -> tuple[int, float]:
-        digest = hashlib.md5(token.encode("utf-8")).digest()
-        bucket = int.from_bytes(digest[:4], "big")
-        sign = 1.0 if digest[4] % 2 == 0 else -1.0
-        return bucket, sign
+        return stable_hash(token)
 
     def _hashed_dense_vector(self, token_counts: Counter[str], dim: int = 256) -> list[float]:
         vector = [0.0] * dim
@@ -440,19 +396,7 @@ class LocalRAGStore:
 
     @staticmethod
     def _normalize_scores(scores: dict[int, float]) -> dict[int, float]:
-        if not scores:
-            return {}
-
-        values = list(scores.values())
-        high = max(values)
-        low = min(values)
-        if math.isclose(high, low):
-            if high <= 0:
-                return {chunk_id: 0.0 for chunk_id in scores}
-            return {chunk_id: 1.0 for chunk_id in scores}
-
-        denominator = high - low
-        return {chunk_id: (score - low) / denominator for chunk_id, score in scores.items()}
+        return normalize_scores(scores)
 
     def _keyword_scores(self, query: str) -> dict[int, float]:
         query_token_counts = Counter(tokenize(query))

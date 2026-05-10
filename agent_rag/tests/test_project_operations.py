@@ -14,20 +14,15 @@ class ProjectOperationsTests(unittest.TestCase):
     def test_readme_documents_langgraph_environment_and_service_scripts(self) -> None:
         readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
 
-        self.assertIn("conda run -n langgraph", readme)
+        self.assertIn("python -m pip install -e .", readme)
         self.assertIn("scripts\\start.ps1", readme)
         self.assertIn("scripts\\stop.ps1", readme)
         self.assertIn("scripts\\status.ps1", readme)
 
     def test_requirements_do_not_list_unused_beautifulsoup_dependency(self) -> None:
-        requirements = {
-            line.strip().lower()
-            for line in (PROJECT_ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines()
-            if line.strip() and not line.strip().startswith("#")
-        }
-
-        self.assertNotIn("beautifulsoup4", requirements)
-        self.assertNotIn("bs4", requirements)
+        pyproject_text = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        self.assertNotIn("beautifulsoup4", pyproject_text)
+        self.assertNotIn("bs4", pyproject_text)
 
     def test_quality_entrypoint_is_documented_for_local_and_ci_runs(self) -> None:
         pyproject_path = PROJECT_ROOT / "pyproject.toml"
@@ -50,7 +45,7 @@ class ProjectOperationsTests(unittest.TestCase):
             "python -m ruff format --check .",
             "python -m ruff check .",
             "python -m pyright",
-            "python -m coverage run -m unittest discover -s tests -v",
+            "python -m coverage run -m pytest tests/",
             "python -m coverage report",
         ):
             self.assertIn(command, workflow)

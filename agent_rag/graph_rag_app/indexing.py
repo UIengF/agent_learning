@@ -18,13 +18,18 @@ from .config import (
     IndexBuildConfig,
 )
 from .corpus import chunk_text, load_docx_text, load_markdown_text, tokenize
+from .query_rewrite import expand_query_for_retrieval
 from .retrieval import (
     DashScopeEmbeddingClient,
     EmbeddingBackend,
-    LocalRAGStore,
     SearchResult,
-    expand_query_for_retrieval,
+    build_bm25_idf,
+    build_idf,
+    dense_cosine_similarity,
+    normalize_dense_vector,
+    normalize_scores,
     rerank_results_by_metadata,
+    stable_hash,
 )
 
 
@@ -75,43 +80,54 @@ class IndexedRetriever:
             keyword_weight if keyword_weight is not None else manifest["config"]["keyword_weight"]
         )
         self.embedding_client = embedding_client
-        self.chunk_records = self._load_chunk_records(self.db_path)
-        self.chunk_token_counts = [Counter(record["token_counts"]) for record in self.chunk_records]
-        self.chunk_lengths = [int(record["doc_length"]) for record in self.chunk_records]
-        self.avg_chunk_length = (
-            sum(self.chunk_lengths) / len(self.chunk_lengths) if self.chunk_lengths else 1.0
-        )
-        self.bm25_idf = self._load_idf_table(self.db_path, "bm25_idf")
-        self.idf = self._load_idf_table(self.db_path, "idf")
-        self.chunk_dense_vectors = [record["dense_vector"] for record in self.chunk_records]
-
-    @staticmethod
-    def _connect(db_path: Path) -> sqlite3.Connection:
-        return sqlite3.connect(db_path)
-
-    @classmethod
-    def _load_chunk_records(cls, db_path: Path) -> list[dict[str, Any]]:
-        conn = cls._connect(db_path)
+        self._conn = sqlite3.connect(self.db_path)
         try:
-            rows = conn.execute(
-                """
-                SELECT
-                    chunk_id,
-                    document_id,
-                    source_path,
-                    section_title,
-                    chunk_index,
-                    updated_at,
-                    text,
-                    doc_length,
-                    token_counts_json,
-                    dense_vector_json
-                FROM chunks
-                ORDER BY chunk_id
-                """
-            ).fetchall()
-        finally:
-            conn.close()
+            self.chunk_records = self._load_chunk_records()
+            self.chunk_token_counts = [
+                Counter(record["token_counts"]) for record in self.chunk_records
+            ]
+            self.chunk_lengths = [int(record["doc_length"]) for record in self.chunk_records]
+            self.avg_chunk_length = (
+                sum(self.chunk_lengths) / len(self.chunk_lengths) if self.chunk_lengths else 1.0
+            )
+            self.bm25_idf = self._load_idf_table("bm25_idf")
+            self.idf = self._load_idf_table("idf")
+            self.chunk_dense_vectors = [record["dense_vector"] for record in self.chunk_records]
+        except Exception:
+            self.close()
+            raise
+
+    def close(self) -> None:
+        if hasattr(self, "_conn"):
+            self._conn.close()
+
+    def __enter__(self) -> IndexedRetriever:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        self.close()
+
+    def _load_chunk_records(self) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            """
+            SELECT
+                chunk_id,
+                document_id,
+                source_path,
+                section_title,
+                chunk_index,
+                updated_at,
+                text,
+                doc_length,
+                token_counts_json,
+                dense_vector_json
+            FROM chunks
+            ORDER BY chunk_id
+            """
+        ).fetchall()
 
         records = []
         for row in rows:
@@ -131,29 +147,16 @@ class IndexedRetriever:
             )
         return records
 
-    @classmethod
-    def _load_idf_table(cls, db_path: Path, table_name: str) -> dict[str, float]:
-        conn = cls._connect(db_path)
-        try:
-            rows = conn.execute(f"SELECT token, value FROM {table_name}").fetchall()
-        finally:
-            conn.close()
+    def _load_idf_table(self, table_name: str) -> dict[str, float]:
+        rows = self._conn.execute(f"SELECT token, value FROM {table_name}").fetchall()
         return {str(token): float(value) for token, value in rows}
-
-    @staticmethod
-    def _normalize_dense_vector(vector: list[float]) -> list[float]:
-        return LocalRAGStore._normalize_dense_vector(vector)
-
-    @staticmethod
-    def _dense_cosine_similarity(left: list[float], right: list[float]) -> float:
-        return LocalRAGStore._dense_cosine_similarity(left, right)
 
     def _hashed_dense_vector(self, token_counts: Counter[str], dim: int) -> list[float]:
         vector = [0.0] * dim
         for token, count in token_counts.items():
-            bucket, sign = LocalRAGStore._stable_hash(token)
+            bucket, sign = stable_hash(token)
             vector[bucket % dim] += sign * float(count)
-        return self._normalize_dense_vector(vector)
+        return normalize_dense_vector(vector)
 
     def _bm25_score(
         self,
@@ -177,10 +180,6 @@ class IndexedRetriever:
         return score
 
     @staticmethod
-    def _normalize_scores(scores: dict[int, float]) -> dict[int, float]:
-        return LocalRAGStore._normalize_scores(scores)
-
-    @staticmethod
     def _normalize_query(query: str) -> str:
         return " ".join(query.strip().lower().split())
 
@@ -200,13 +199,13 @@ class IndexedRetriever:
     def _dense_scores(self, query: str) -> dict[int, float]:
         dim = len(self.chunk_dense_vectors[0]) if self.chunk_dense_vectors else 256
         if self.embedding_client is not None:
-            query_vector = self._normalize_dense_vector(self.embedding_client.embed_query(query))
+            query_vector = normalize_dense_vector(self.embedding_client.embed_query(query))
         else:
             query_tokens = Counter(tokenize(self._normalize_query(query)))
             query_vector = self._hashed_dense_vector(query_tokens, dim=dim)
         scores: dict[int, float] = {}
         for index, chunk_vector in enumerate(self.chunk_dense_vectors):
-            score = self._dense_cosine_similarity(query_vector, chunk_vector)
+            score = dense_cosine_similarity(query_vector, chunk_vector)
             if score > 0:
                 scores[index] = score
         return scores
@@ -245,7 +244,7 @@ class IndexedRetriever:
         retrieval_query = self._normalize_query(expand_query_for_retrieval(normalized_query))
 
         if strategy == "sparse":
-            sparse_scores = self._normalize_scores(self._keyword_scores(retrieval_query))
+            sparse_scores = normalize_scores(self._keyword_scores(retrieval_query))
             ranked = sorted(sparse_scores.items(), key=lambda item: item[1], reverse=True)
             results = [
                 self._build_result(chunk_id, score, "sparse")
@@ -255,7 +254,7 @@ class IndexedRetriever:
             return rerank_results_by_metadata(normalized_query, results, top_k=top_k)
 
         if strategy == "dense":
-            dense_scores = self._normalize_scores(self._dense_scores(retrieval_query))
+            dense_scores = normalize_scores(self._dense_scores(retrieval_query))
             ranked = sorted(dense_scores.items(), key=lambda item: item[1], reverse=True)
             results = [
                 self._build_result(chunk_id, score, "dense")
@@ -264,8 +263,8 @@ class IndexedRetriever:
             ]
             return rerank_results_by_metadata(normalized_query, results, top_k=top_k)
 
-        keyword_scores = self._normalize_scores(self._keyword_scores(retrieval_query))
-        dense_scores = self._normalize_scores(self._dense_scores(retrieval_query))
+        keyword_scores = normalize_scores(self._keyword_scores(retrieval_query))
+        dense_scores = normalize_scores(self._dense_scores(retrieval_query))
         dense_weight = 1.0 - self.keyword_weight
         candidates = set(keyword_scores) | set(dense_scores)
         fused_scores = []
@@ -386,9 +385,9 @@ def _split_markdown_sections(text: str) -> list[tuple[str, str]]:
 def _fallback_dense_vector(token_counts: Counter[str], dim: int) -> list[float]:
     vector = [0.0] * dim
     for token, count in token_counts.items():
-        bucket, sign = LocalRAGStore._stable_hash(token)
+        bucket, sign = stable_hash(token)
         vector[bucket % dim] += sign * float(count)
-    return LocalRAGStore._normalize_dense_vector(vector)
+    return normalize_dense_vector(vector)
 
 
 def _document_title_for(document: SourceDocument) -> str:
@@ -516,7 +515,7 @@ def _build_chunk_records(
     texts = [item["text"] for item in interim_chunks]
     if embedding_client is not None:
         dense_vectors = embedding_client.embed_documents(texts)
-        dense_vectors = [LocalRAGStore._normalize_dense_vector(vector) for vector in dense_vectors]
+        dense_vectors = [normalize_dense_vector(vector) for vector in dense_vectors]
     else:
         dense_vectors = [
             _fallback_dense_vector(Counter(item["token_counts"]), dim=config.dense_dim)
@@ -543,8 +542,8 @@ def _build_chunk_records(
 
 def _build_idf_tables(records: list[ChunkRecord]) -> tuple[dict[str, float], dict[str, float]]:
     counters = [Counter(record.token_counts) for record in records]
-    idf = LocalRAGStore._build_idf(counters)
-    bm25_idf = LocalRAGStore._build_bm25_idf(counters)
+    idf = build_idf(counters)
+    bm25_idf = build_bm25_idf(counters)
     return idf, bm25_idf
 
 

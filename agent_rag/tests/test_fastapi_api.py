@@ -443,6 +443,12 @@ class FastApiAppTests(TestCase):
                 self.strategy = strategy
                 return [FakeResult()]
 
+            def __enter__(self) -> FakeIndex:
+                return self
+
+            def __exit__(self, *exc_info: object) -> None:
+                pass
+
         client = TestClient(create_app(default_index_dir="agent"))
 
         with patch("graph_rag_app.api.load_index", return_value=FakeIndex()) as load_index:
@@ -649,7 +655,7 @@ class FastApiCliTests(TestCase):
         self.assertEqual(args.port, 8765)
 
     def test_main_dispatches_serve_command(self) -> None:
-        with patch("graph_rag_app.cli.serve_fastapi", return_value=0) as serve_fastapi:
+        with patch("graph_rag_app.server.serve_fastapi", return_value=0) as serve_fastapi:
             exit_code = main(
                 ["serve", "--index-dir", ".\\agent", "--host", "127.0.0.1", "--port", "8765"]
             )
@@ -663,7 +669,7 @@ class FastApiCliTests(TestCase):
         )
 
     def test_main_dispatches_ui_command_to_fastapi(self) -> None:
-        with patch("graph_rag_app.cli.serve_fastapi", return_value=0) as serve_fastapi:
+        with patch("graph_rag_app.server.serve_fastapi", return_value=0) as serve_fastapi:
             exit_code = main(
                 ["ui", "--index-dir", ".\\agent", "--host", "127.0.0.1", "--port", "8765"]
             )

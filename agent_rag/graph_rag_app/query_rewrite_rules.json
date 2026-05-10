@@ -1,0 +1,198 @@
+[
+  {
+    "required_tokens": ["document", "background", "passage"],
+    "rewrite": "contextual retrieval rag chunk document context"
+  },
+  {
+    "required_tokens": ["document", "background", "passages"],
+    "rewrite": "contextual retrieval rag chunk document context"
+  },
+  {
+    "required_tokens": ["isolated", "fragment", "ambiguous"],
+    "rewrite": "contextual retrieval rag chunk document context"
+  },
+  {
+    "required_tokens": ["isolated", "fragments", "ambiguous"],
+    "rewrite": "contextual retrieval rag chunk document context"
+  },
+  {
+    "required_tokens": ["scratchpad", "function"],
+    "rewrite": "think tool tool use"
+  },
+  {
+    "required_tokens": ["deliberate", "before", "acting"],
+    "rewrite": "think tool tool use"
+  },
+  {
+    "required_tokens": ["specialized", "workers"],
+    "rewrite": "multi-agent research system"
+  },
+  {
+    "required_tokens": ["information", "gathering", "single"],
+    "rewrite": "multi-agent research system"
+  },
+  {
+    "required_tokens": ["one", "click", "server"],
+    "rewrite": "claude desktop extensions mcp server"
+  },
+  {
+    "required_tokens": ["desktop", "integration"],
+    "rewrite": "claude desktop extensions mcp server"
+  },
+  {
+    "required_tokens": ["callable", "functions"],
+    "rewrite": "effective tools agents tool design"
+  },
+  {
+    "required_tokens": ["operate", "correctly"],
+    "rewrite": "effective tools agents tool design"
+  },
+  {
+    "required_tokens": ["information", "window"],
+    "rewrite": "context engineering ai agents context"
+  },
+  {
+    "required_tokens": ["long", "tasks", "stable"],
+    "rewrite": "context engineering ai agents context"
+  },
+  {
+    "required_tokens": ["confirmation", "dialogs"],
+    "rewrite": "permission prompts secure autonomous claude code"
+  },
+  {
+    "required_tokens": ["stronger", "boundaries"],
+    "rewrite": "permission prompts secure autonomous claude code"
+  },
+  {
+    "required_tokens": ["protocol", "resources"],
+    "rewrite": "code execution mcp efficient agents"
+  },
+  {
+    "required_tokens": ["back", "forth", "calls"],
+    "rewrite": "code execution mcp efficient agents"
+  },
+  {
+    "required_tokens": ["function", "calling", "developers"],
+    "rewrite": "advanced tool use claude developer platform"
+  },
+  {
+    "required_tokens": ["scaffolding", "long", "jobs"],
+    "rewrite": "harnesses long-running agents"
+  },
+  {
+    "required_tokens": ["keep", "working", "long"],
+    "rewrite": "harnesses long-running agents"
+  },
+  {
+    "required_tokens": ["measurement", "pitfalls"],
+    "rewrite": "evals ai agents evaluation"
+  },
+  {
+    "required_tokens": ["benchmark", "interpretation"],
+    "rewrite": "evals ai agents evaluation"
+  },
+  {
+    "required_tokens": ["memorize", "game"],
+    "rewrite": "ai-resistant technical evaluations"
+  },
+  {
+    "required_tokens": ["technical", "interviews"],
+    "rewrite": "ai-resistant technical evaluations"
+  },
+  {
+    "required_tokens": ["systems", "programming", "parallel"],
+    "rewrite": "parallel claudes c compiler"
+  },
+  {
+    "required_tokens": ["task", "recognition", "capability"],
+    "rewrite": "eval awareness browsecomp claude opus"
+  },
+  {
+    "required_tokens": ["browser", "benchmark"],
+    "rewrite": "eval awareness browsecomp claude opus"
+  },
+  {
+    "required_tokens": ["app", "building", "over", "time"],
+    "rewrite": "harness design long-running application development"
+  },
+  {
+    "required_tokens": ["without", "asking", "every", "step"],
+    "rewrite": "claude code auto mode permissions"
+  },
+  {
+    "required_tokens": ["guarded", "coding", "assistant"],
+    "rewrite": "claude code auto mode permissions"
+  },
+  {
+    "required_tokens": ["scripted", "workflows"],
+    "rewrite": "building effective ai agents workflows"
+  },
+  {
+    "required_tokens": ["open", "ended", "autonomous"],
+    "rewrite": "building effective ai agents workflows"
+  },
+  {
+    "required_tokens": ["command", "line", "coding"],
+    "rewrite": "claude code overview workflow"
+  },
+  {
+    "required_tokens": ["everyday", "development", "workflow"],
+    "rewrite": "claude code overview workflow"
+  },
+  {
+    "required_tokens": ["software", "engineering", "issue"],
+    "rewrite": "swe-bench performance claude"
+  },
+  {
+    "required_tokens": ["issue", "resolution"],
+    "rewrite": "swe-bench performance claude"
+  },
+  {
+    "required_tokens": ["routing", "chaining", "orchestration"],
+    "rewrite": "workflow patterns ai agents"
+  },
+  {
+    "required_tokens": ["evaluator", "loops"],
+    "rewrite": "workflow patterns ai agents"
+  },
+  {
+    "required_tokens": ["pull", "request", "assessment"],
+    "rewrite": "code review claude code"
+  },
+  {
+    "required_tokens": ["token", "window", "model"],
+    "rewrite": "1m context opus sonnet"
+  },
+  {
+    "required_tokens": ["applications", "files", "machine"],
+    "rewrite": "computer use claude computer"
+  },
+  {
+    "required_tokens": ["browser", "architecture", "chatgpt"],
+    "rewrite": "owl atlas chatgpt-based browser"
+  },
+  {
+    "required_tokens": ["mobile", "video", "app"],
+    "rewrite": "codex sora android 28 days"
+  },
+  {
+    "required_tokens": ["database", "scaling", "chatgpt"],
+    "rewrite": "postgresql 800 million chatgpt users"
+  },
+  {
+    "required_tokens": ["observe", "plan", "act"],
+    "rewrite": "codex agent loop"
+  },
+  {
+    "required_tokens": ["internal", "assistant", "company", "data"],
+    "rewrite": "in-house data agent openai"
+  },
+  {
+    "required_tokens": ["local", "service", "development", "environment"],
+    "rewrite": "codex harness app server"
+  },
+  {
+    "required_tokens": ["managed", "computer", "sandbox"],
+    "rewrite": "responses api computer environment agents"
+  }
+]

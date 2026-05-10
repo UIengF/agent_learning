@@ -7,6 +7,12 @@ This directory is the active Agentic RAG project.
 Use this project directory as the working directory for development, testing,
 indexing, and runtime commands.
 
+Requires Python 3.11+. Install with:
+
+```powershell
+python -m pip install -e .
+```
+
 ## Entry point
 
 The main entrypoint is
@@ -29,15 +35,11 @@ Run these commands from this project directory:
 cd D:\Code\agent_learning\agent_rag
 ```
 
-Use the existing adapted Conda environment for this project:
+Check your Python version:
 
 ```powershell
-conda run -n langgraph python --version
+python --version
 ```
-
-Do not install or upgrade dependencies until this environment has been checked.
-If dependencies are genuinely missing, review [requirements.txt](D:/Code/agent_learning/agent_rag/requirements.txt)
-first and install only after confirming the `langgraph` environment is insufficient.
 
 Start, inspect, and stop the service with the project scripts:
 
@@ -50,25 +52,25 @@ Start, inspect, and stop the service with the project scripts:
 Build an index:
 
 ```powershell
-conda run -n langgraph python graph_rag.py index build --kb-path "<knowledge-base-path>" --output-dir .\agent
+python graph_rag.py index build --kb-path "<knowledge-base-path>" --output-dir .\agent
 ```
 
 Inspect an existing index:
 
 ```powershell
-conda run -n langgraph python graph_rag.py index inspect --index-dir .\agent
+python graph_rag.py index inspect --index-dir .\agent
 ```
 
 Run direct retrieval without the agent:
 
 ```powershell
-conda run -n langgraph python graph_rag.py query run --index-dir .\agent --question "openai agent"
+python graph_rag.py query run --index-dir .\agent --question "openai agent"
 ```
 
 Run the agent with local retrieval and web fallback:
 
 ```powershell
-conda run -n langgraph python graph_rag.py ask --index-dir .\agent --question "What changed recently about OpenAI agents?"
+python graph_rag.py ask --index-dir .\agent --question "What changed recently about OpenAI agents?"
 ```
 
 Configure the chat model in `.env` with OpenAI-compatible provider settings:
@@ -85,7 +87,7 @@ new model/provider switches should use the `RAG_MODEL_*` variables.
 Run the browser question-answering UI:
 
 ```powershell
-conda run -n langgraph python graph_rag.py ui --index-dir .\agent
+python graph_rag.py ui --index-dir .\agent
 ```
 
 The UI is served by the FastAPI backend and listens at `http://127.0.0.1:8765`
@@ -94,7 +96,7 @@ by default. Use `--host` and `--port` to change the bind address.
 Run the FastAPI backend service explicitly:
 
 ```powershell
-conda run -n langgraph python graph_rag.py serve --index-dir .\agent --host 127.0.0.1 --port 8765
+python graph_rag.py serve --index-dir .\agent --host 127.0.0.1 --port 8765
 ```
 
 Configure web search providers in `.env`:
@@ -185,13 +187,13 @@ Invoke-RestMethod `
 Run Google Scholar search and export the results to Markdown:
 
 ```powershell
-conda run -n langgraph python graph_rag.py scholar search --topic "graph rag" --count 5 --save-md
+python graph_rag.py scholar search --topic "graph rag" --count 5 --save-md
 ```
 
-Run tests:
+## Running tests
 
 ```powershell
-conda run -n langgraph python -m unittest discover -s tests -v
+pytest tests/
 ```
 
 ## Harness features
@@ -286,8 +288,8 @@ The CLI can inspect persisted job records and logs from the same runtime
 directory:
 
 ```powershell
-conda run -n langgraph python graph_rag.py job status --job-id <job_id>
-conda run -n langgraph python graph_rag.py job log --job-id <job_id>
+python graph_rag.py job status --job-id <job_id>
+python graph_rag.py job log --job-id <job_id>
 ```
 
 ## Quality checks
@@ -295,17 +297,17 @@ conda run -n langgraph python graph_rag.py job log --job-id <job_id>
 Install development-only quality tools:
 
 ```powershell
-conda run -n langgraph python -m pip install -r requirements-dev.txt
+python -m pip install -r requirements-dev.txt
 ```
 
 Run the same checks locally that CI runs:
 
 ```powershell
-conda run -n langgraph python -m ruff format --check .
-conda run -n langgraph python -m ruff check .
-conda run -n langgraph python -m pyright
-conda run -n langgraph python -m coverage run -m unittest discover -s tests -v
-conda run -n langgraph python -m coverage report
+python -m ruff format --check .
+python -m ruff check .
+python -m pyright
+python -m coverage run -m pytest tests/
+python -m coverage report
 ```
 
 GitHub Actions runs these commands from this project directory.
@@ -328,8 +330,8 @@ $env:LANGCHAIN_PROJECT="agent-rag"
 Then run the usual commands:
 
 ```powershell
-conda run -n langgraph python graph_rag.py ask --index-dir .\agent --question "What changed recently about OpenAI agents?"
-conda run -n langgraph python graph_rag.py eval run --dataset evals\datasets\agent-smoke.jsonl --index-dir .\agent
+python graph_rag.py ask --index-dir .\agent --question "What changed recently about OpenAI agents?"
+python graph_rag.py eval run --dataset evals\datasets\agent-smoke.jsonl --index-dir .\agent
 ```
 
 Evaluation runs attach dataset metadata such as `dataset_name`, `case_id`,
@@ -386,5 +388,4 @@ Generated runtime files are stored under
 
 - Use [agent](D:/Code/agent_learning/agent_rag/agent) for the local index directory.
 - Use [runtime](D:/Code/agent_learning/agent_rag/runtime) for checkpoints and logs.
-- Use `conda run -n langgraph` for project commands unless a task explicitly targets another environment.
 - If a command depends on relative paths, run it from this project directory.

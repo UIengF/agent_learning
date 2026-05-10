@@ -18,9 +18,9 @@ def tokenize(text: str) -> list[str]:
 def load_docx_text(docx_path: str | Path) -> str:
     path = Path(docx_path)
     if not path.exists():
-        raise FileNotFoundError(f"未找到文档：{path}")
+        raise FileNotFoundError(f"Document not found: {path}")
     if path.suffix.lower() != ".docx":
-        raise ValueError(f"当前仅支持 .docx 文档：{path}")
+        raise ValueError(f"Only .docx documents are supported: {path}")
 
     with zipfile.ZipFile(path) as archive:
         xml_bytes = archive.read("word/document.xml")
@@ -40,18 +40,18 @@ def load_docx_text(docx_path: str | Path) -> str:
 def load_markdown_text(markdown_path: str | Path) -> str:
     path = Path(markdown_path)
     if not path.exists():
-        raise FileNotFoundError(f"未找到 Markdown 文件：{path}")
+        raise FileNotFoundError(f"Markdown file not found: {path}")
     if path.suffix.lower() != ".md":
-        raise ValueError(f"当前仅支持 .md Markdown 文件：{path}")
+        raise ValueError(f"Only .md Markdown files are supported: {path}")
     return path.read_text(encoding="utf-8").strip()
 
 
 def load_markdown_directory_text(directory_path: str | Path) -> str:
     root = Path(directory_path)
     if not root.exists():
-        raise FileNotFoundError(f"未找到知识库目录：{root}")
+        raise FileNotFoundError(f"Knowledge base directory not found: {root}")
     if not root.is_dir():
-        raise ValueError(f"知识库路径不是目录：{root}")
+        raise ValueError(f"Knowledge base path is not a directory: {root}")
 
     markdown_files = sorted(path for path in root.rglob("*.md") if path.is_file())
     if not markdown_files:
@@ -73,7 +73,7 @@ def load_markdown_directory_text(directory_path: str | Path) -> str:
 def load_corpus_text(kb_path: str | Path) -> str:
     path = Path(kb_path)
     if not path.exists():
-        raise FileNotFoundError(f"未找到知识库路径：{path}")
+        raise FileNotFoundError(f"Knowledge base path not found: {path}")
 
     if path.is_dir():
         return load_markdown_directory_text(path)
@@ -84,7 +84,7 @@ def load_corpus_text(kb_path: str | Path) -> str:
     if suffix == ".md":
         return f"[SOURCE: {path.name}]\n\n{load_markdown_text(path)}"
 
-    raise ValueError(f"不支持的知识库路径类型：{path}")
+    raise ValueError(f"Unsupported knowledge base path type: {path}")
 
 
 def _split_sentences(text: str) -> list[str]:
@@ -174,9 +174,9 @@ def _chunk_long_text(text: str, chunk_size: int, chunk_overlap: int) -> list[str
 
 def chunk_text(text: str, chunk_size: int = 1000, chunk_overlap: int = 150) -> list[str]:
     if chunk_size <= 0:
-        raise ValueError("chunk_size 必须大于 0")
+        raise ValueError("chunk_size must be greater than 0")
     if chunk_overlap < 0 or chunk_overlap >= chunk_size:
-        raise ValueError("chunk_overlap 必须满足 0 <= overlap < chunk_size")
+        raise ValueError("chunk_overlap must satisfy 0 <= overlap < chunk_size")
 
     paragraphs = [segment.strip() for segment in text.split("\n\n") if segment.strip()]
     if not paragraphs:

@@ -4,6 +4,7 @@ __pycache__/
 runtime/
 .worktrees/
 toy/.worktrees/
+toy/
 toy/__pycache__/
 toy/logs/
 toy/checkpoints.db
@@ -34,3 +35,44 @@ ai_coding/**/*.pyc
 ai_coding/.coverage
 ai_coding/.pytest_cache/
 ai_coding/.ruff_cache/
+ai_coding/.pytest-tmp/
+ai_coding/CLAUDE.md
+ai_coding/1.png
+
+# IDE
+.vscode/
+.idea/
+
+# Unrelated projects and scratch files
+C++/
+coder_duel/
+learn-claude-code/
+learn_api/
+local-research-swarm/
+aicoding_e2e_sandbox/
+aicoding_e2e_sandbox_fix/
+aicoding_e2e_sandbox_full/
+aicoding_sandbox/
+
+ai_coding_agent/
+
+# Generated artifacts and temp files
+artifacts/
+docs/
+papers/
+prompt_shift_outputs/
+tmp/
+test/
+acm_prompt_*.txt
+cot_attack_extracted.txt
+download_visual_cot_val.py
+generate_abstracts.py
+make_filtered_appendix_from_grid.py
+make_prompt_shift_figures.py
+resume_based_interview_questions.md
+agent_interview_by_company_questions.md
+agent_interview_image_text.md
+agent_interview_image_text_assets/
+agent_interview_ocr_raw.json
+agent_interview_summary.md
+*.png

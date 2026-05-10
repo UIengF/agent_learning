@@ -221,6 +221,233 @@ class AppConfig:
     jobs: JobConfig = field(default_factory=JobConfig)
 
 
+def _build_model_config() -> ModelConfig:
+    return ModelConfig(
+        api_key=os.getenv("RAG_MODEL_API_KEY", os.getenv("DASHSCOPE_API_KEY", "")),
+        api_base=os.getenv("RAG_MODEL_API_BASE", DEFAULT_API_BASE),
+        model_name=os.getenv("RAG_MODEL_NAME", DEFAULT_MODEL_NAME),
+    )
+
+
+def _build_embedding_config() -> EmbeddingConfig:
+    return EmbeddingConfig(
+        model=os.getenv("DASHSCOPE_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL),
+        max_batch_size=_parse_int(
+            os.getenv("DASHSCOPE_EMBEDDING_BATCH_SIZE"),
+            DEFAULT_EMBEDDING_BATCH_SIZE,
+        ),
+    )
+
+
+def _build_retrieval_config() -> RetrievalConfig:
+    return RetrievalConfig(
+        keyword_weight=_parse_float(
+            os.getenv("RAG_KEYWORD_WEIGHT"),
+            DEFAULT_KEYWORD_WEIGHT,
+        ),
+    )
+
+
+def _build_web_config() -> WebConfig:
+    defaults = WebConfig()
+    return WebConfig(
+        enabled=parse_bool_env("RAG_WEB_ENABLED", defaults.enabled),
+        search_provider=os.getenv("RAG_WEB_SEARCH_PROVIDER", defaults.search_provider),
+        search_top_k=_parse_int(
+            os.getenv("RAG_WEB_SEARCH_TOP_K"),
+            defaults.search_top_k,
+        ),
+        fetch_timeout_seconds=_parse_int(
+            os.getenv("RAG_WEB_FETCH_TIMEOUT_SECONDS"),
+            defaults.fetch_timeout_seconds,
+        ),
+        fetch_max_bytes=_parse_int(
+            os.getenv("RAG_WEB_FETCH_MAX_BYTES"),
+            defaults.fetch_max_bytes,
+        ),
+        fetch_max_chars=_parse_int(
+            os.getenv("RAG_WEB_FETCH_MAX_CHARS"),
+            defaults.fetch_max_chars,
+        ),
+        user_agent=os.getenv("RAG_WEB_USER_AGENT", defaults.user_agent),
+        searxng_url=os.getenv("RAG_SEARXNG_URL", defaults.searxng_url),
+        searxng_engines=os.getenv("RAG_SEARXNG_ENGINES", defaults.searxng_engines),
+        searxng_categories=os.getenv(
+            "RAG_SEARXNG_CATEGORIES",
+            defaults.searxng_categories,
+        ),
+        searxng_language=os.getenv("RAG_SEARXNG_LANGUAGE", defaults.searxng_language),
+    )
+
+
+def _build_scholar_config() -> ScholarConfig:
+    defaults = ScholarConfig()
+    return ScholarConfig(
+        enabled=parse_bool_env("RAG_SCHOLAR_ENABLED", defaults.enabled),
+        api_key=os.getenv("SERPAPI_API_KEY", defaults.api_key),
+        default_count=max(
+            1,
+            min(
+                20,
+                _parse_int(
+                    os.getenv("RAG_SCHOLAR_DEFAULT_COUNT"),
+                    defaults.default_count,
+                ),
+            ),
+        ),
+        max_count=max(
+            1,
+            min(
+                20,
+                _parse_int(
+                    os.getenv("RAG_SCHOLAR_MAX_COUNT"),
+                    defaults.max_count,
+                ),
+            ),
+        ),
+        engine=os.getenv("RAG_SCHOLAR_ENGINE", defaults.engine),
+    )
+
+
+def _build_context_config() -> ContextConfig:
+    return ContextConfig(
+        max_recent_messages=_parse_int(
+            os.getenv("RAG_MAX_RECENT_MESSAGES"),
+            DEFAULT_MAX_RECENT_MESSAGES,
+        ),
+        recent_full_turns=_parse_int(
+            os.getenv("RAG_RECENT_FULL_TURNS"),
+            DEFAULT_RECENT_FULL_TURNS,
+        ),
+        max_context_chars=_parse_int(
+            os.getenv("RAG_MAX_CONTEXT_CHARS"),
+            DEFAULT_MAX_CONTEXT_CHARS,
+        ),
+        max_context_tokens=_parse_int(
+            os.getenv("RAG_MAX_CONTEXT_TOKENS"),
+            DEFAULT_MAX_CONTEXT_TOKENS,
+        ),
+        live_messages_compression_enabled=parse_bool_env(
+            "RAG_LIVE_MESSAGES_COMPRESSION_ENABLED",
+            True,
+        ),
+        live_messages_keep_turns=_parse_int(
+            os.getenv("RAG_LIVE_MESSAGES_KEEP_TURNS"),
+            DEFAULT_LIVE_MESSAGES_KEEP_TURNS,
+        ),
+        live_messages_max_fetch_chars=_parse_int(
+            os.getenv("RAG_LIVE_MESSAGES_MAX_FETCH_CHARS"),
+            DEFAULT_LIVE_MESSAGES_MAX_FETCH_CHARS,
+        ),
+        live_messages_max_search_results=_parse_int(
+            os.getenv("RAG_LIVE_MESSAGES_MAX_SEARCH_RESULTS"),
+            DEFAULT_LIVE_MESSAGES_MAX_SEARCH_RESULTS,
+        ),
+    )
+
+
+def _build_generation_config() -> GenerationConfig:
+    defaults = GenerationConfig()
+    return GenerationConfig(
+        max_rounds=_parse_int(os.getenv("RAG_MAX_ROUNDS"), defaults.max_rounds),
+        min_evidence_score=_parse_float(
+            os.getenv("RAG_MIN_EVIDENCE_SCORE"),
+            defaults.min_evidence_score,
+        ),
+        allow_query_decomposition=parse_bool_env(
+            "RAG_ALLOW_QUERY_DECOMPOSITION",
+            defaults.allow_query_decomposition,
+        ),
+    )
+
+
+def _build_eval_judge_config() -> EvalJudgeConfig:
+    defaults = EvalJudgeConfig()
+    return EvalJudgeConfig(
+        enabled=parse_bool_env("RAG_EVAL_JUDGE_ENABLED", defaults.enabled),
+        api_key=os.getenv(
+            "RAG_EVAL_JUDGE_API_KEY",
+            os.getenv("RAG_MODEL_API_KEY", os.getenv("DASHSCOPE_API_KEY", "")),
+        ),
+        api_base=os.getenv(
+            "RAG_EVAL_JUDGE_API_BASE",
+            os.getenv("RAG_MODEL_API_BASE", DEFAULT_API_BASE),
+        ),
+        model_name=os.getenv(
+            "RAG_EVAL_JUDGE_MODEL",
+            os.getenv("RAG_MODEL_NAME", DEFAULT_MODEL_NAME),
+        ),
+    )
+
+
+def _build_langsmith_config() -> LangSmithConfig:
+    defaults = LangSmithConfig()
+    return LangSmithConfig(
+        enabled=parse_bool_env("RAG_LANGSMITH_ENABLED", defaults.enabled),
+        tracing_v2=parse_bool_env("LANGCHAIN_TRACING_V2", defaults.tracing_v2),
+        api_key=os.getenv("LANGCHAIN_API_KEY", defaults.api_key),
+        project_name=os.getenv("LANGCHAIN_PROJECT", defaults.project_name),
+        endpoint=os.getenv("LANGCHAIN_ENDPOINT", defaults.endpoint),
+    )
+
+
+def _build_harness_config() -> HarnessConfig:
+    defaults = HarnessConfig()
+    return HarnessConfig(
+        skills_dir=os.getenv("RAG_SKILLS_DIR", defaults.skills_dir),
+        structured_trace_enabled=parse_bool_env(
+            "RAG_STRUCTURED_TRACE_ENABLED",
+            defaults.structured_trace_enabled,
+        ),
+        structured_trace_dir=os.getenv(
+            "RAG_STRUCTURED_TRACE_DIR",
+            defaults.structured_trace_dir,
+        ),
+    )
+
+
+def _build_permission_config() -> PermissionConfig:
+    defaults = PermissionConfig()
+    return PermissionConfig(
+        allowed_index_roots=os.getenv(
+            "RAG_ALLOWED_INDEX_ROOTS",
+            defaults.allowed_index_roots,
+        ),
+        allow_local_web_fetch=parse_bool_env(
+            "RAG_ALLOW_LOCAL_WEB_FETCH",
+            defaults.allow_local_web_fetch,
+        ),
+        allow_private_web_fetch=parse_bool_env(
+            "RAG_ALLOW_PRIVATE_WEB_FETCH",
+            defaults.allow_private_web_fetch,
+        ),
+    )
+
+
+def _build_job_config() -> JobConfig:
+    defaults = JobConfig()
+    return JobConfig(
+        runtime_dir=os.getenv("RAG_JOB_RUNTIME_DIR", defaults.runtime_dir),
+        max_log_chars=_parse_int(os.getenv("RAG_JOB_MAX_LOG_CHARS"), defaults.max_log_chars),
+    )
+
+
+def _build_runtime_config(
+    session_id: str,
+    checkpoint_db: str,
+    resume: bool,
+    interrupt_after: list[str] | tuple[str, ...] | None,
+) -> RuntimeConfig:
+    return RuntimeConfig(
+        session_id=session_id,
+        checkpoint_db=checkpoint_db,
+        user_memory_path=os.getenv("RAG_USER_MEMORY_PATH", DEFAULT_USER_MEMORY_PATH),
+        user_id=os.getenv("RAG_USER_ID", DEFAULT_USER_ID),
+        resume=resume,
+        interrupt_after=tuple(interrupt_after or ()),
+    )
+
+
 def build_app_config(
     kb_path: str | Path,
     *,
@@ -230,190 +457,24 @@ def build_app_config(
     interrupt_after: list[str] | tuple[str, ...] | None = None,
 ) -> AppConfig:
     load_env_file()
-    web_defaults = WebConfig()
-    scholar_defaults = ScholarConfig()
-    eval_defaults = EvalJudgeConfig()
-    langsmith_defaults = LangSmithConfig()
-    harness_defaults = HarnessConfig()
-    permission_defaults = PermissionConfig()
-    job_defaults = JobConfig()
     return AppConfig(
         kb_path=Path(kb_path),
-        model=ModelConfig(
-            api_key=os.getenv("RAG_MODEL_API_KEY", os.getenv("DASHSCOPE_API_KEY", "")),
-            api_base=os.getenv("RAG_MODEL_API_BASE", DEFAULT_API_BASE),
-            model_name=os.getenv("RAG_MODEL_NAME", DEFAULT_MODEL_NAME),
-        ),
-        embedding=EmbeddingConfig(
-            model=os.getenv("DASHSCOPE_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL),
-            max_batch_size=_parse_int(
-                os.getenv("DASHSCOPE_EMBEDDING_BATCH_SIZE"),
-                DEFAULT_EMBEDDING_BATCH_SIZE,
-            ),
-        ),
-        retrieval=RetrievalConfig(
-            keyword_weight=_parse_float(
-                os.getenv("RAG_KEYWORD_WEIGHT"),
-                DEFAULT_KEYWORD_WEIGHT,
-            ),
-        ),
-        web=WebConfig(
-            enabled=parse_bool_env("RAG_WEB_ENABLED", web_defaults.enabled),
-            search_provider=os.getenv("RAG_WEB_SEARCH_PROVIDER", web_defaults.search_provider),
-            search_top_k=_parse_int(
-                os.getenv("RAG_WEB_SEARCH_TOP_K"),
-                web_defaults.search_top_k,
-            ),
-            fetch_timeout_seconds=_parse_int(
-                os.getenv("RAG_WEB_FETCH_TIMEOUT_SECONDS"),
-                web_defaults.fetch_timeout_seconds,
-            ),
-            fetch_max_bytes=_parse_int(
-                os.getenv("RAG_WEB_FETCH_MAX_BYTES"),
-                web_defaults.fetch_max_bytes,
-            ),
-            fetch_max_chars=_parse_int(
-                os.getenv("RAG_WEB_FETCH_MAX_CHARS"),
-                web_defaults.fetch_max_chars,
-            ),
-            user_agent=os.getenv("RAG_WEB_USER_AGENT", web_defaults.user_agent),
-            searxng_url=os.getenv("RAG_SEARXNG_URL", web_defaults.searxng_url),
-            searxng_engines=os.getenv("RAG_SEARXNG_ENGINES", web_defaults.searxng_engines),
-            searxng_categories=os.getenv(
-                "RAG_SEARXNG_CATEGORIES",
-                web_defaults.searxng_categories,
-            ),
-            searxng_language=os.getenv("RAG_SEARXNG_LANGUAGE", web_defaults.searxng_language),
-        ),
-        scholar=ScholarConfig(
-            enabled=parse_bool_env("RAG_SCHOLAR_ENABLED", scholar_defaults.enabled),
-            api_key=os.getenv("SERPAPI_API_KEY", scholar_defaults.api_key),
-            default_count=max(
-                1,
-                min(
-                    20,
-                    _parse_int(
-                        os.getenv("RAG_SCHOLAR_DEFAULT_COUNT"),
-                        scholar_defaults.default_count,
-                    ),
-                ),
-            ),
-            max_count=max(
-                1,
-                min(
-                    20,
-                    _parse_int(
-                        os.getenv("RAG_SCHOLAR_MAX_COUNT"),
-                        scholar_defaults.max_count,
-                    ),
-                ),
-            ),
-            engine=os.getenv("RAG_SCHOLAR_ENGINE", scholar_defaults.engine),
-        ),
-        context=ContextConfig(
-            max_recent_messages=_parse_int(
-                os.getenv("RAG_MAX_RECENT_MESSAGES"),
-                DEFAULT_MAX_RECENT_MESSAGES,
-            ),
-            recent_full_turns=_parse_int(
-                os.getenv("RAG_RECENT_FULL_TURNS"),
-                DEFAULT_RECENT_FULL_TURNS,
-            ),
-            max_context_chars=_parse_int(
-                os.getenv("RAG_MAX_CONTEXT_CHARS"),
-                DEFAULT_MAX_CONTEXT_CHARS,
-            ),
-            max_context_tokens=_parse_int(
-                os.getenv("RAG_MAX_CONTEXT_TOKENS"),
-                DEFAULT_MAX_CONTEXT_TOKENS,
-            ),
-            live_messages_compression_enabled=parse_bool_env(
-                "RAG_LIVE_MESSAGES_COMPRESSION_ENABLED",
-                True,
-            ),
-            live_messages_keep_turns=_parse_int(
-                os.getenv("RAG_LIVE_MESSAGES_KEEP_TURNS"),
-                DEFAULT_LIVE_MESSAGES_KEEP_TURNS,
-            ),
-            live_messages_max_fetch_chars=_parse_int(
-                os.getenv("RAG_LIVE_MESSAGES_MAX_FETCH_CHARS"),
-                DEFAULT_LIVE_MESSAGES_MAX_FETCH_CHARS,
-            ),
-            live_messages_max_search_results=_parse_int(
-                os.getenv("RAG_LIVE_MESSAGES_MAX_SEARCH_RESULTS"),
-                DEFAULT_LIVE_MESSAGES_MAX_SEARCH_RESULTS,
-            ),
-        ),
-        generation=GenerationConfig(
-            max_rounds=_parse_int(os.getenv("RAG_MAX_ROUNDS"), GenerationConfig().max_rounds),
-            min_evidence_score=_parse_float(
-                os.getenv("RAG_MIN_EVIDENCE_SCORE"),
-                GenerationConfig().min_evidence_score,
-            ),
-            allow_query_decomposition=parse_bool_env(
-                "RAG_ALLOW_QUERY_DECOMPOSITION",
-                GenerationConfig().allow_query_decomposition,
-            ),
-        ),
-        eval_judge=EvalJudgeConfig(
-            enabled=parse_bool_env("RAG_EVAL_JUDGE_ENABLED", eval_defaults.enabled),
-            api_key=os.getenv(
-                "RAG_EVAL_JUDGE_API_KEY",
-                os.getenv("RAG_MODEL_API_KEY", os.getenv("DASHSCOPE_API_KEY", "")),
-            ),
-            api_base=os.getenv(
-                "RAG_EVAL_JUDGE_API_BASE",
-                os.getenv("RAG_MODEL_API_BASE", DEFAULT_API_BASE),
-            ),
-            model_name=os.getenv(
-                "RAG_EVAL_JUDGE_MODEL",
-                os.getenv("RAG_MODEL_NAME", DEFAULT_MODEL_NAME),
-            ),
-        ),
-        langsmith=LangSmithConfig(
-            enabled=parse_bool_env("RAG_LANGSMITH_ENABLED", langsmith_defaults.enabled),
-            tracing_v2=parse_bool_env("LANGCHAIN_TRACING_V2", langsmith_defaults.tracing_v2),
-            api_key=os.getenv("LANGCHAIN_API_KEY", langsmith_defaults.api_key),
-            project_name=os.getenv("LANGCHAIN_PROJECT", langsmith_defaults.project_name),
-            endpoint=os.getenv("LANGCHAIN_ENDPOINT", langsmith_defaults.endpoint),
-        ),
-        harness=HarnessConfig(
-            skills_dir=os.getenv("RAG_SKILLS_DIR", harness_defaults.skills_dir),
-            structured_trace_enabled=parse_bool_env(
-                "RAG_STRUCTURED_TRACE_ENABLED",
-                harness_defaults.structured_trace_enabled,
-            ),
-            structured_trace_dir=os.getenv(
-                "RAG_STRUCTURED_TRACE_DIR",
-                harness_defaults.structured_trace_dir,
-            ),
-        ),
-        permissions=PermissionConfig(
-            allowed_index_roots=os.getenv(
-                "RAG_ALLOWED_INDEX_ROOTS",
-                permission_defaults.allowed_index_roots,
-            ),
-            allow_local_web_fetch=parse_bool_env(
-                "RAG_ALLOW_LOCAL_WEB_FETCH",
-                permission_defaults.allow_local_web_fetch,
-            ),
-            allow_private_web_fetch=parse_bool_env(
-                "RAG_ALLOW_PRIVATE_WEB_FETCH",
-                permission_defaults.allow_private_web_fetch,
-            ),
-        ),
-        jobs=JobConfig(
-            runtime_dir=os.getenv("RAG_JOB_RUNTIME_DIR", job_defaults.runtime_dir),
-            max_log_chars=_parse_int(
-                os.getenv("RAG_JOB_MAX_LOG_CHARS"), job_defaults.max_log_chars
-            ),
-        ),
-        runtime=RuntimeConfig(
+        model=_build_model_config(),
+        embedding=_build_embedding_config(),
+        retrieval=_build_retrieval_config(),
+        web=_build_web_config(),
+        scholar=_build_scholar_config(),
+        context=_build_context_config(),
+        generation=_build_generation_config(),
+        eval_judge=_build_eval_judge_config(),
+        langsmith=_build_langsmith_config(),
+        harness=_build_harness_config(),
+        permissions=_build_permission_config(),
+        jobs=_build_job_config(),
+        runtime=_build_runtime_config(
             session_id=session_id,
             checkpoint_db=checkpoint_db,
-            user_memory_path=os.getenv("RAG_USER_MEMORY_PATH", DEFAULT_USER_MEMORY_PATH),
-            user_id=os.getenv("RAG_USER_ID", DEFAULT_USER_ID),
             resume=resume,
-            interrupt_after=tuple(interrupt_after or ()),
+            interrupt_after=interrupt_after,
         ),
     )

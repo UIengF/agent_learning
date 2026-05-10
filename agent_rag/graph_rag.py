@@ -21,7 +21,10 @@ from graph_rag_app import (  # noqa: E402
     run_demo,
     run_or_resume,
 )
-from graph_rag_app.cli import main  # noqa: E402
+from graph_rag_app.cli import get_project_version, main  # noqa: E402
+
+
+__version__ = get_project_version()
 
 
 __all__ = [
@@ -37,6 +40,7 @@ __all__ = [
     "parse_args",
     "run_demo",
     "run_or_resume",
+    "__version__",
 ]
 
 
