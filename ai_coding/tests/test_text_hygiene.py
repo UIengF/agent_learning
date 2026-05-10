@@ -34,12 +34,12 @@ def test_text_hygiene_cli_check_and_clean(tmp_path: Path, capsys) -> None:
     path = tmp_path / "README.md"
     path.write_text("hello — world\n", encoding="utf-8")
 
-    assert main(["text", "check", "--workspace", str(tmp_path)]) == 0
+    assert main(["dev", "text", "check", "--workspace", str(tmp_path)]) == 0
     check_output = capsys.readouterr().out
     assert "README.md:1" in check_output
     assert "hello — world" in path.read_text(encoding="utf-8")
 
-    assert main(["text", "clean", "--workspace", str(tmp_path)]) == 0
+    assert main(["dev", "text", "clean", "--workspace", str(tmp_path)]) == 0
     clean_output = capsys.readouterr().out
     assert "README.md" in clean_output
     assert path.read_text(encoding="utf-8") == "hello - world\n"

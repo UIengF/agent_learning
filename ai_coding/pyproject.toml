@@ -10,6 +10,9 @@ dependencies = [
     "pydantic",
 ]
 
+[project.scripts]
+aicoding = "aicoding_app.cli:main"
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"

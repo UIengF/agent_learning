@@ -38,10 +38,11 @@ def test_model_config_accepts_deepseek_aliases(tmp_path: Path) -> None:
     assert config.model.model_name == "deepseek-chat"
 
 
-def test_web_command_parses_trace_server_options() -> None:
-    args = build_parser().parse_args(["web", "--host", "127.0.0.1", "--port", "8766"])
+def test_trace_serve_command_parses_server_options() -> None:
+    args = build_parser().parse_args(["trace", "serve", "--host", "127.0.0.1", "--port", "8766"])
 
-    assert args.command == "web"
+    assert args.command == "trace"
+    assert args.trace_command == "serve"
     assert args.host == "127.0.0.1"
     assert args.port == 8766
 
@@ -166,6 +167,9 @@ def test_module_cli_agent_detects_completed_workspace_and_skips_duplicate_note_a
     env.update(
         {
             "AICODING_MODEL_API_KEY": "",
+            "AICODING_API_KEY": "",
+            "DEEPSEEK_API_KEY": "",
+            "OPENAI_API_KEY": "",
             "AICODING_RUNTIME_DIR": str(runtime_dir),
             "AICODING_ALLOWED_COMMANDS": "python note_indexer.py;git status;git diff",
         }

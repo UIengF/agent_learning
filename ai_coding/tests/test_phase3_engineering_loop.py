@@ -14,7 +14,19 @@ def test_verify_cli_runs_allowed_pytest_command(monkeypatch, tmp_path: Path, cap
     (tmp_path / "tests" / "test_ok.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
     monkeypatch.setenv("AICODING_RUNTIME_DIR", str(tmp_path / "runtime"))
 
-    assert main(["verify", "--workspace", str(tmp_path), "--command", "python -m pytest tests"]) == 0
+    assert (
+        main(
+            [
+                "dev",
+                "verify",
+                "--workspace",
+                str(tmp_path),
+                "--validation-command",
+                "python -m pytest tests",
+            ]
+        )
+        == 0
+    )
 
     output = capsys.readouterr().out
     assert "Validation command: python -m pytest tests" in output
@@ -30,7 +42,19 @@ def test_verify_cli_includes_pytest_failure_context(monkeypatch, tmp_path: Path,
     )
     monkeypatch.setenv("AICODING_RUNTIME_DIR", str(tmp_path / "runtime"))
 
-    assert main(["verify", "--workspace", str(tmp_path), "--command", "python -m pytest tests"]) == 0
+    assert (
+        main(
+            [
+                "dev",
+                "verify",
+                "--workspace",
+                str(tmp_path),
+                "--validation-command",
+                "python -m pytest tests",
+            ]
+        )
+        == 0
+    )
 
     output = capsys.readouterr().out
     assert "Status: failed" in output
@@ -64,7 +88,7 @@ def test_git_summary_cli_outputs_branch_changed_files_and_commit_preview(
     (tmp_path / "app.py").write_text("new\n", encoding="utf-8")
     monkeypatch.setenv("AICODING_RUNTIME_DIR", str(tmp_path / "runtime"))
 
-    assert main(["git", "summary", "--workspace", str(tmp_path)]) == 0
+    assert main(["dev", "git", "summary", "--workspace", str(tmp_path)]) == 0
 
     output = capsys.readouterr().out
     assert "Git summary:" in output

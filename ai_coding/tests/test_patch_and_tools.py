@@ -301,7 +301,8 @@ def test_policy_denial_loop_stops() -> None:
 
     run_state.record_policy_denial('python -c "print(1)"', "command is outside whitelist")
     assert not run_state.should_stop()
-    run_state.record_policy_denial("python -m pip list", "command is outside whitelist")
+    for command in ("python -m pip list", "python -m pip freeze", "python -m pip show pytest"):
+        run_state.record_policy_denial(command, "command is outside whitelist")
 
     assert run_state.should_stop()
     assert run_state.stop_reason == "policy_denial_loop"

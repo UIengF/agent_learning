@@ -609,12 +609,47 @@ class CodingAgent:
         if executable not in {"python", "python.exe"}:
             return False
         script = Path(parts[1]).name.lower()
+        if script == "note_indexer.py" and parts[2:] == ["list"]:
+            return True
         if len(parts) > 2:
             return False
         return script.startswith("test_") and script.endswith(".py")
 
     def _should_skip_idempotent_smoke_command(self, command: str) -> bool:
-        return False
+        parts = self._split_command_for_inspection(command)
+        if len(parts) < 5:
+            return False
+        executable = Path(parts[0]).name.lower()
+        script = Path(parts[1]).name.lower()
+        if executable not in {"python", "python.exe"} or script != "note_indexer.py":
+            return False
+        if parts[2] != "add" or "--tags" in parts:
+            return False
+        if any(part.startswith("--content=") for part in parts):
+            return False
+        try:
+            content_index = parts.index("--content")
+        except ValueError:
+            return False
+        if content_index <= 3 or content_index + 1 >= len(parts):
+            return False
+        title = parts[3]
+        content = parts[content_index + 1]
+        notes_path = self.workspace / "notes.json"
+        if not notes_path.is_file():
+            return False
+        try:
+            notes = json.loads(notes_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        if not isinstance(notes, list):
+            return False
+        return any(
+            isinstance(note, dict)
+            and note.get("title") == title
+            and note.get("content") == content
+            for note in notes
+        )
 
     def _build_partial_summary(
         self,

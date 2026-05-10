@@ -178,7 +178,7 @@ def test_plan_mode_records_plan_without_modifying_files(monkeypatch, tmp_path: P
 def test_repo_map_cli_prints_repository_summary(tmp_path: Path, capsys) -> None:
     (tmp_path / "app.py").write_text("def main():\n    return 1\n", encoding="utf-8")
 
-    assert main(["repo", "map", "--workspace", str(tmp_path)]) == 0
+    assert main(["dev", "repo", "map", "--workspace", str(tmp_path)]) == 0
 
     output = capsys.readouterr().out
     assert "Files:" in output

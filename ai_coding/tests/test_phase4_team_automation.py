@@ -13,6 +13,7 @@ def test_memory_add_inspect_and_forget(monkeypatch, tmp_path: Path, capsys) -> N
     assert (
         main(
             [
+                "dev",
                 "memory",
                 "add",
                 "--kind",
@@ -26,14 +27,14 @@ def test_memory_add_inspect_and_forget(monkeypatch, tmp_path: Path, capsys) -> N
     added = capsys.readouterr().out.strip()
     memory_id = added.split(": ", 1)[1]
 
-    assert main(["memory", "inspect"]) == 0
+    assert main(["dev", "memory", "inspect"]) == 0
     inspected = capsys.readouterr().out
     assert memory_id in inspected
     assert "Run python -m pytest tests before PR" in inspected
 
-    assert main(["memory", "forget", "--id", memory_id]) == 0
+    assert main(["dev", "memory", "forget", "--id", memory_id]) == 0
     assert "memory_forgotten" in capsys.readouterr().out
-    assert main(["memory", "inspect"]) == 0
+    assert main(["dev", "memory", "inspect"]) == 0
     assert "Memory: none" in capsys.readouterr().out
 
 
@@ -97,6 +98,7 @@ def test_schedule_plan_is_dry_run(tmp_path: Path, capsys) -> None:
     assert (
         main(
             [
+                "dev",
                 "schedule",
                 "plan",
                 "--workspace",
@@ -161,7 +163,7 @@ def test_eval_run_reads_fixture_and_executes_hidden_validation(
         lambda policy, command, *, timeout_seconds: FakeValidation(),
     )
 
-    assert main(["eval", "run", "--workspace", str(tmp_path), "--suite", str(suite)]) == 0
+    assert main(["dev", "eval", "run", "--workspace", str(tmp_path), "--suite", str(suite)]) == 0
 
     output = capsys.readouterr().out
     assert "Eval summary:" in output
@@ -171,7 +173,7 @@ def test_eval_run_reads_fixture_and_executes_hidden_validation(
 
 
 def test_connectors_list_outputs_disabled_placeholders(capsys) -> None:
-    assert main(["connectors", "list"]) == 0
+    assert main(["dev", "connectors", "list"]) == 0
 
     output = capsys.readouterr().out
     assert "github: disabled/read-only placeholder" in output

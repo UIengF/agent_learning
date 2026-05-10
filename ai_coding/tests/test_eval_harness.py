@@ -858,6 +858,7 @@ def test_eval_cli_returns_zero_when_hidden_validation_passes(
         [
             "--env-file",
             str(tmp_path / "missing.env"),
+            "dev",
             "eval",
             "run",
             "--workspace",
@@ -896,6 +897,7 @@ def test_eval_cli_returns_one_when_hidden_validation_fails(
         [
             "--env-file",
             str(tmp_path / "missing.env"),
+            "dev",
             "eval",
             "run",
             "--workspace",

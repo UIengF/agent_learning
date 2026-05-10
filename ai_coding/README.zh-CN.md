@@ -104,60 +104,60 @@ python aicoding.py trace serve --session-id demo --port 8765
 查看仓库映射：
 
 ```powershell
-python aicoding.py repo map --workspace .
+python aicoding.py dev repo map --workspace .
 ```
 
 解释符号、文件或 pytest 失败输出：
 
 ```powershell
-python aicoding.py context explain --workspace . --query "CodingAgent"
-python aicoding.py context explain --workspace . --query "aicoding_app/agent.py"
-python aicoding.py context explain --workspace . --query "FAILED tests/test_agent.py::test_agent - AssertionError"
+python aicoding.py dev context explain --workspace . --query "CodingAgent"
+python aicoding.py dev context explain --workspace . --query "aicoding_app/agent.py"
+python aicoding.py dev context explain --workspace . --query "FAILED tests/test_agent.py::test_agent - AssertionError"
 ```
 
 运行一个白名单允许的验证命令：
 
 ```powershell
-python aicoding.py verify --workspace . --command "python -m pytest tests"
+python aicoding.py dev verify --workspace . --validation-command "python -m pytest tests"
 ```
 
 查看本地 git 工程摘要：
 
 ```powershell
-python aicoding.py git summary --workspace .
+python aicoding.py dev git summary --workspace .
 ```
 
 管理本地工程记忆：
 
 ```powershell
-python aicoding.py memory add --kind command --text "Run python -m pytest tests before PR"
-python aicoding.py memory inspect
-python aicoding.py memory forget --id mem-12345678
+python aicoding.py dev memory add --kind command --text "Run python -m pytest tests before PR"
+python aicoding.py dev memory inspect
+python aicoding.py dev memory forget --id mem-12345678
 ```
 
 生成定时任务 dry-run 计划：
 
 ```powershell
-python aicoding.py schedule plan --workspace . --task "run pytest weekly" --cadence weekly
+python aicoding.py dev schedule plan --workspace . --task "run pytest weekly" --cadence weekly
 ```
 
 dry-run 评估任务集：
 
 ```powershell
-python aicoding.py eval run --workspace . --suite tests/fixtures/eval_suite.json
+python aicoding.py dev eval run --workspace . --suite tests/fixtures/eval_suite.json
 ```
 
 查看 connector 占位能力：
 
 ```powershell
-python aicoding.py connectors list
+python aicoding.py dev connectors list
 ```
 
 检查或清理模型编辑后的文本卫生：
 
 ```powershell
-python aicoding.py text check --workspace .
-python aicoding.py text clean --workspace .
+python aicoding.py dev text check --workspace .
+python aicoding.py dev text clean --workspace .
 ```
 
 ## Harness 能力

@@ -105,69 +105,67 @@ python aicoding.py trace show --session-id demo
 Serve the local multi-turn Web UI:
 
 ```powershell
-python aicoding.py web --open
-python aicoding.py web --session-id demo --port 8765
-python aicoding.py trace serve
+python aicoding.py trace serve --open
 python aicoding.py trace serve --session-id demo --port 8765
 ```
 
 Print repository intelligence:
 
 ```powershell
-python aicoding.py repo map --workspace .
+python aicoding.py dev repo map --workspace .
 ```
 
 Explain a symbol, file, or pytest failure with repository intelligence:
 
 ```powershell
-python aicoding.py context explain --workspace . --query "CodingAgent"
-python aicoding.py context explain --workspace . --query "aicoding_app/agent.py"
-python aicoding.py context explain --workspace . --query "FAILED tests/test_agent.py::test_agent - AssertionError"
+python aicoding.py dev context explain --workspace . --query "CodingAgent"
+python aicoding.py dev context explain --workspace . --query "aicoding_app/agent.py"
+python aicoding.py dev context explain --workspace . --query "FAILED tests/test_agent.py::test_agent - AssertionError"
 ```
 
 Run one allowed validation command:
 
 ```powershell
-python aicoding.py verify --workspace . --command "python -m pytest tests"
+python aicoding.py dev verify --workspace . --validation-command "python -m pytest tests"
 ```
 
 Print a local git engineering summary:
 
 ```powershell
-python aicoding.py git summary --workspace .
+python aicoding.py dev git summary --workspace .
 ```
 
 Manage local engineering memory:
 
 ```powershell
-python aicoding.py memory add --kind command --text "Run python -m pytest tests before PR"
-python aicoding.py memory inspect
-python aicoding.py memory forget --id mem-12345678
+python aicoding.py dev memory add --kind command --text "Run python -m pytest tests before PR"
+python aicoding.py dev memory inspect
+python aicoding.py dev memory forget --id mem-12345678
 ```
 
 Create a dry-run schedule plan:
 
 ```powershell
-python aicoding.py schedule plan --workspace . --task "run pytest weekly" --cadence weekly
+python aicoding.py dev schedule plan --workspace . --task "run pytest weekly" --cadence weekly
 ```
 
 Dry-run an eval suite:
 
 ```powershell
-python aicoding.py eval run --workspace . --suite tests/fixtures/eval_suite.json
+python aicoding.py dev eval run --workspace . --suite tests/fixtures/eval_suite.json
 ```
 
 List connector placeholders:
 
 ```powershell
-python aicoding.py connectors list
+python aicoding.py dev connectors list
 ```
 
 Check or clean text hygiene after model edits:
 
 ```powershell
-python aicoding.py text check --workspace .
-python aicoding.py text clean --workspace .
+python aicoding.py dev text check --workspace .
+python aicoding.py dev text clean --workspace .
 ```
 
 ## Harness Features

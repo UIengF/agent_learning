@@ -83,7 +83,7 @@ def test_explain_context_links_pytest_failure_to_related_source(tmp_path: Path) 
 def test_context_explain_cli_prints_symbol_context(tmp_path: Path, capsys) -> None:
     _write_demo_repo(tmp_path)
 
-    assert main(["context", "explain", "--workspace", str(tmp_path), "--query", "App"]) == 0
+    assert main(["dev", "context", "explain", "--workspace", str(tmp_path), "--query", "App"]) == 0
 
     output = capsys.readouterr().out
     assert "Symbol definitions:" in output
