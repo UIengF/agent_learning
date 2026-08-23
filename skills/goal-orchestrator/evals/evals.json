@@ -1,0 +1,82 @@
+{
+  "skill_name": "goal-orchestrator",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Create and start a persistent Goal from this fuzzy request: modernize authentication.",
+      "expected_output": "Routes first to goal-prompt formation and does not create or activate runtime state before the GoalPackage is researched and user-confirmed.",
+      "files": [],
+      "expectations": [
+        "The response identifies goal-prompt as the formation owner.",
+        "No runtime Goal is created before package confirmation.",
+        "Formation includes outcome, DOD, initial solution and milestones."
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Generate a copy-pasteable /goal for this migration. Do not create or run it.",
+      "expected_output": "Routes to goal-prompt and stops after prompt formation without starting goal-orchestrator runtime state.",
+      "files": [],
+      "expectations": [
+        "The request is treated as prompt_only.",
+        "No native Goal or .goals directory is created.",
+        "The orchestrator does not claim runtime ownership."
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Import this confirmed GoalPackage. It has handoff_intent ready; do not start it.",
+      "expected_output": "Validates and imports the package into the sole runtime state with ready status.",
+      "files": [],
+      "expectations": [
+        "Package provenance and user confirmation are validated.",
+        "The resulting Goal remains ready.",
+        "The GoalPackage is not treated as a second state source."
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "The active Goal has a routine reversible implementation choice. Decide the next increment.",
+      "expected_output": "Uses the evidence-bound global steering prompt and direct validation without automatically creating a reviewer subagent.",
+      "files": [],
+      "expectations": [
+        "The decision maps to Goal outcome and DOD evidence.",
+        "Assumptions, alternatives, global effect and rollback are checked.",
+        "No reviewer is spawned solely for a routine local decision."
+      ]
+    },
+    {
+      "id": 5,
+      "prompt": "The same root cause has failed repeatedly, complexity is increasing, and two loops produced no new DOD evidence. Continue the active Goal.",
+      "expected_output": "Freezes a neutral direction-review packet and asks an independent subagent to assess local-only improvement and dead-end risk before further repair.",
+      "files": [],
+      "expectations": [
+        "The anomaly triggers a direction reviewer.",
+        "The reviewer is read-only and returns continue/replan/research/design/rollback/ask_user/blocked guidance.",
+        "The Goal owner validates the recommendation rather than delegating state ownership."
+      ]
+    },
+    {
+      "id": 6,
+      "prompt": "New evidence requires changing the active Goal's scope and DOD.",
+      "expected_output": "Enters waiting_for_decision and does not silently update the contract; after user approval it may request a GoalPackageRevision from goal-prompt.",
+      "files": [],
+      "expectations": [
+        "Agent consensus does not replace the user decision.",
+        "The runtime owner retains state ownership during recompilation.",
+        "Affected evidence is invalidated after the new contract revision."
+      ]
+    },
+    {
+      "id": 7,
+      "prompt": "All milestones are marked complete. Mark the active Goal complete.",
+      "expected_output": "Refuses to infer completion from milestones and runs fresh DOD evidence plus the independent final audit on a frozen revision.",
+      "files": [],
+      "expectations": [
+        "Every DOD is bound to current contract and artifact revisions.",
+        "OCR is run when applicable and a fresh-lineage final reviewer is used.",
+        "The Goal is complete only after all findings and pending work are resolved."
+      ]
+    }
+  ]
+}

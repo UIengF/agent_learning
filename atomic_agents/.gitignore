@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+.atomic-agents/
+*.log
+.DS_Store
+.coverage
+htmlcov/
+dist/
+build/
+examples/solution-design-out/
+
+# 编排运行产物（非源码）
+atomic-orch-out/
+# codex 运行时事件/日志快照（非源码；ask_codex.sh 本体仍提交）
+vendor/codex/.runtime/

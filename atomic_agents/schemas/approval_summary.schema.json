@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atomic-agents.local/schemas/approval_summary.schema.json",
+  "title": "ApprovalSummary",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task_restated",
+    "stages",
+    "files_may_change",
+    "reviewers",
+    "budget",
+    "stop_points",
+    "irreversible_ops",
+    "risk_flags",
+    "editable_hints"
+  ],
+  "properties": {
+    "task_restated": {
+      "type": "string"
+    },
+    "stages": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "files_may_change": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "reviewers": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/reviewer"
+      }
+    },
+    "budget": {
+      "$ref": "#/$defs/budget"
+    },
+    "stop_points": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "irreversible_ops": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "risk_flags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "editable_hints": {
+      "type": "string"
+    }
+  },
+  "$defs": {
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_total_cost",
+        "per_atom_timeout_sec"
+      ],
+      "properties": {
+        "max_total_cost": {
+          "type": "number"
+        },
+        "per_atom_timeout_sec": {
+          "type": "integer"
+        }
+      }
+    },
+    "reviewer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node",
+        "criteria"
+      ],
+      "properties": {
+        "node": {
+          "type": "string"
+        },
+        "criteria": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,277 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atomic-agents.local/schemas/atom_contract.schema.json",
+  "title": "AtomContract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task",
+    "inputs",
+    "context_files",
+    "workspace",
+    "read_only",
+    "write_scope",
+    "required_capabilities",
+    "status",
+    "result",
+    "artifacts",
+    "output_file",
+    "handoff",
+    "consult",
+    "atom_id",
+    "correlation_id",
+    "logical_role",
+    "resolved_runner",
+    "session_id",
+    "hop_count",
+    "limits",
+    "cost",
+    "duration_sec",
+    "timestamps"
+  ],
+  "properties": {
+    "task": {
+      "type": "string"
+    },
+    "inputs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/input_ref"
+      }
+    },
+    "context_files": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "workspace": {
+      "type": "string"
+    },
+    "read_only": {
+      "type": "boolean"
+    },
+    "write_scope": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "required_capabilities": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "status": {
+      "$ref": "#/$defs/status"
+    },
+    "result": {
+      "type": "string"
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/artifact"
+      }
+    },
+    "output_file": {
+      "type": "string"
+    },
+    "output_schema_ref": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "handoff": {
+      "$ref": "#/$defs/handoff"
+    },
+    "consult": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "atom_id": {
+      "type": "string"
+    },
+    "correlation_id": {
+      "type": "string"
+    },
+    "logical_role": {
+      "type": "string"
+    },
+    "resolved_runner": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/resolved_runner"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "session_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "hop_count": {
+      "type": "integer"
+    },
+    "limits": {
+      "$ref": "#/$defs/limits"
+    },
+    "cost": {
+      "type": "number"
+    },
+    "duration_sec": {
+      "type": "number"
+    },
+    "timestamps": {
+      "$ref": "#/$defs/timestamps"
+    }
+  },
+  "$defs": {
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "type",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      }
+    },
+    "handoff": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "completed",
+        "pending",
+        "decisions",
+        "risks"
+      ],
+      "properties": {
+        "completed": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "pending": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "decisions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "risks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "input_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "from",
+        "field"
+      ],
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "field": {
+          "type": "string"
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_cost",
+        "timeout_sec",
+        "max_internal_turns"
+      ],
+      "properties": {
+        "max_cost": {
+          "type": "number"
+        },
+        "timeout_sec": {
+          "type": "integer"
+        },
+        "max_internal_turns": {
+          "type": "integer"
+        }
+      }
+    },
+    "resolved_runner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runner",
+        "model",
+        "permission"
+      ],
+      "properties": {
+        "runner": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "permission": {
+          "type": "string"
+        }
+      }
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "success",
+        "failed",
+        "blocked",
+        "timeout"
+      ]
+    },
+    "timestamps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "started_at",
+        "finished_at"
+      ],
+      "properties": {
+        "started_at": {
+          "type": "string"
+        },
+        "finished_at": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

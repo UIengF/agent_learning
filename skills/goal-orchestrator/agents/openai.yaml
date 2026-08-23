@@ -1,0 +1,4 @@
+interface:
+  display_name: "目标编排器"
+  short_description: "运行已确认的 Goal，持续纠偏、编排里程碑并审计完成"
+  default_prompt: "使用 $goal-orchestrator 导入已确认的 GoalPackage，按全局证据推进和纠偏，在异常时调用独立 reviewer，并完成最终审计。"

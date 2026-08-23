@@ -1,0 +1,38 @@
+[
+  {
+    "query": "Create and start a persistent goal for this multi-phase migration.",
+    "should_trigger": true
+  },
+  {
+    "query": "Resume the active Goal and continue from its current milestone.",
+    "should_trigger": true
+  },
+  {
+    "query": "Pause this Goal before the next external operation.",
+    "should_trigger": true
+  },
+  {
+    "query": "Audit whether the long-running Goal is actually complete.",
+    "should_trigger": true
+  },
+  {
+    "query": "The current Goal keeps failing on the same root cause; reassess the direction.",
+    "should_trigger": true
+  },
+  {
+    "query": "Generate a /goal prompt for this task, but do not create or run it.",
+    "should_trigger": false
+  },
+  {
+    "query": "Design milestones and an initial architecture for a GoalPackage.",
+    "should_trigger": false
+  },
+  {
+    "query": "Fix this small lint error and run the unit test.",
+    "should_trigger": false
+  },
+  {
+    "query": "Interview me to clarify what I want from this product idea.",
+    "should_trigger": false
+  }
+]

@@ -10,6 +10,13 @@ This repository is a collection of learning and portfolio projects.
 - [ai_coding](ai_coding/): local AI coding agent CLI built with
   Python and LangGraph, covering workspace-scoped edits, command permissions,
   session recovery, structured trace, evidence cache, and harness skills.
+- [atomic_agents](atomic_agents/): atomic agent orchestration runtime with
+  approval gates, retries, scheduling, and multi-agent orchestration templates.
+
+## Skills
+
+- [goal-orchestrator](skills/goal-orchestrator/): goal contracts, milestones,
+  steering, handoffs, and completion audits for long-running agent work.
 
 Each project lives in its own directory so dependencies, runtime files, tests,
 and documentation can evolve independently.

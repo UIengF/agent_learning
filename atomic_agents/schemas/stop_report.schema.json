@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atomic-agents.local/schemas/stop_report.schema.json",
+  "title": "StopReport",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "reason",
+    "failed_atom",
+    "attempts",
+    "reviewer_evidence",
+    "files_changed",
+    "cost_consumed",
+    "likely_causes",
+    "options"
+  ],
+  "properties": {
+    "reason": {
+      "type": "string"
+    },
+    "failed_atom": {
+      "type": "string"
+    },
+    "attempts": {
+      "type": "integer"
+    },
+    "reviewer_evidence": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/reviewer_evidence"
+      }
+    },
+    "files_changed": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "cost_consumed": {
+      "type": "number"
+    },
+    "likely_causes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "options": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "$defs": {
+    "reviewer_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "criterion",
+        "verdict",
+        "evidence"
+      ],
+      "properties": {
+        "criterion": {
+          "type": "string"
+        },
+        "verdict": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atomic-agents.local/schemas/lockfile_event.schema.json",
+  "title": "LockfileEvent",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "event_id",
+    "run_id",
+    "atom_id",
+    "attempt_id",
+    "adapter_version",
+    "ts",
+    "evt",
+    "payload"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer"
+    },
+    "event_id": {
+      "type": "string"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "atom_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "attempt_id": {
+      "type": "integer"
+    },
+    "adapter_version": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "ts": {
+      "type": "string"
+    },
+    "evt": {
+      "type": "string"
+    },
+    "payload": {
+      "type": "object"
+    }
+  }
+}
